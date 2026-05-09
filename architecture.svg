@@ -1,0 +1,227 @@
+<svg viewBox="0 0 880 1080" xmlns="http://www.w3.org/2000/svg" font-family="monospace">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#475569"/>
+    </marker>
+    <marker id="arr-red" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arr-orange" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f97316"/>
+    </marker>
+    <marker id="arr-cyan" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#22d3ee"/>
+    </marker>
+    <marker id="arr-pink" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f472b6"/>
+    </marker>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <filter id="glow-gold">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- bg -->
+  <rect width="880" height="1080" fill="#0a0e1a"/>
+  <rect width="880" height="1080" fill="url(#grid)" opacity="0.35"/>
+
+  <!-- title -->
+  <text x="440" y="26" text-anchor="middle" font-size="9" fill="#334155" letter-spacing="3">RAG DATA PIPELINE — ARCHITECTURE</text>
+
+  <!-- ── SOURCES ────────────────────────────────────── -->
+  <rect x="270" y="36" width="340" height="58" rx="4" fill="#1e293b" stroke="#334155"/>
+  <text x="440" y="57" text-anchor="middle" font-size="10" font-weight="bold" fill="#f1f5f9">DOCUMENT SOURCES</text>
+  <text x="440" y="72" text-anchor="middle" font-size="8.5" fill="#94a3b8">PDFs · Web Crawl · Structured Records</text>
+  <text x="440" y="86" text-anchor="middle" font-size="7.5" fill="#475569">ingestion events · JSON / Avro</text>
+
+  <!-- sources → kafka (~95%) -->
+  <line x1="440" y1="94" x2="440" y2="134" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="450" y="118" font-size="7.5" fill="#16a34a">~95%  valid</text>
+
+  <!-- sources → dlq (~5%) -->
+  <path d="M590,65 Q720,65 720,128" fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-red)"/>
+  <text x="640" y="82" font-size="7.5" fill="#ef4444">~5%  malformed</text>
+
+  <!-- ── KAFKA ──────────────────────────────────────── -->
+  <rect x="270" y="134" width="340" height="60" rx="4" fill="#0f1f3d" stroke="#1d4ed8" stroke-width="1.5"/>
+  <rect x="270" y="134" width="3" height="60" rx="1" fill="#1d4ed8"/>
+  <text x="350" y="155" font-size="10" font-weight="bold" fill="#60a5fa">KAFKA</text>
+  <text x="420" y="155" font-size="7.5" fill="#1d4ed8"> · Confluent Cloud</text>
+  <text x="350" y="170" font-size="8.5" fill="#94a3b8">topic: raw-documents</text>
+  <text x="350" y="184" font-size="7.5" fill="#475569">Avro schema · Confluent Schema Registry</text>
+
+  <!-- ── DLQ ────────────────────────────────────────── -->
+  <rect x="648" y="118" width="190" height="54" rx="4" fill="#1a0a0a" stroke="#ef4444" stroke-width="1.5"/>
+  <rect x="648" y="118" width="3" height="54" rx="1" fill="#ef4444"/>
+  <text x="743" y="139" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#f87171">DEAD LETTER QUEUE</text>
+  <text x="743" y="153" text-anchor="middle" font-size="8" fill="#94a3b8">raw-documents-dlq</text>
+  <text x="743" y="165" text-anchor="middle" font-size="7.5" fill="#475569">original payload + failure reason</text>
+
+  <!-- kafka → spark -->
+  <line x1="440" y1="194" x2="440" y2="236" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="450" y="219" font-size="7.5" fill="#475569">micro-batch read</text>
+
+  <!-- ── SPARK STREAMING ────────────────────────────── -->
+  <rect x="270" y="236" width="340" height="60" rx="4" fill="#0f2017" stroke="#16a34a" stroke-width="1.5"/>
+  <rect x="270" y="236" width="3" height="60" rx="1" fill="#16a34a"/>
+  <text x="350" y="257" font-size="9.5" font-weight="bold" fill="#4ade80">SPARK STRUCTURED STREAMING</text>
+  <text x="350" y="272" font-size="8.5" fill="#94a3b8">chunk · clean · deduplicate</text>
+  <text x="350" y="286" font-size="7.5" fill="#475569">PySpark · micro-batch from Kafka</text>
+
+  <!-- spark → bronze -->
+  <line x1="440" y1="296" x2="440" y2="338" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ── BRONZE ──────────────────────────────────────── -->
+  <rect x="270" y="338" width="340" height="60" rx="4" fill="#1c1407" stroke="#b45309" stroke-width="1.5"/>
+  <rect x="270" y="338" width="3" height="60" rx="1" fill="#b45309"/>
+  <polygon points="286,372 296,356 306,372" fill="#b45309" opacity="0.85"/>
+  <text x="316" y="361" font-size="9.5" font-weight="bold" fill="#fbbf24">DELTA LAKE — BRONZE</text>
+  <text x="316" y="376" font-size="8.5" fill="#94a3b8">raw documents · append-only</text>
+  <text x="316" y="390" font-size="7.5" fill="#475569">partitioned: source / ingestion_date · S3</text>
+
+  <!-- bronze → silver -->
+  <line x1="440" y1="398" x2="440" y2="440" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="450" y="423" font-size="7.5" fill="#475569">PySpark batch job</text>
+
+  <!-- ── SILVER ──────────────────────────────────────── -->
+  <rect x="270" y="440" width="340" height="60" rx="4" fill="#111827" stroke="#6366f1" stroke-width="1.5"/>
+  <rect x="270" y="440" width="3" height="60" rx="1" fill="#6366f1"/>
+  <polygon points="286,474 296,458 306,474" fill="#6366f1" opacity="0.85"/>
+  <text x="316" y="463" font-size="9.5" font-weight="bold" fill="#a5b4fc">DELTA LAKE — SILVER</text>
+  <text x="316" y="478" font-size="8.5" fill="#94a3b8">cleaned chunks · normalized metadata</text>
+  <text x="316" y="492" font-size="7.5" fill="#475569">normalize · filter · enrich · S3</text>
+
+  <!-- silver → soda1 -->
+  <line x1="440" y1="500" x2="440" y2="542" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ── SODA CORE — BRONZE + SILVER ────────────────── -->
+  <rect x="220" y="542" width="440" height="60" rx="4" fill="#1a1025" stroke="#a855f7" stroke-width="1.5"/>
+  <rect x="220" y="542" width="3" height="60" rx="1" fill="#a855f7"/>
+  <text x="440" y="563" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#c084fc">SODA CORE — QUALITY GATE</text>
+  <text x="440" y="578" text-anchor="middle" font-size="8.5" fill="#94a3b8">Bronze + Silver checks</text>
+  <text x="440" y="592" text-anchor="middle" font-size="7.5" fill="#475569">chunk_length · null_content · dedup_validation</text>
+
+  <!-- soda1 fail → alert1 -->
+  <path d="M660,572 Q750,572 750,630" fill="none" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-orange)"/>
+  <text x="700" y="592" font-size="7.5" fill="#f97316">FAIL</text>
+
+  <!-- alert1 node -->
+  <rect x="686" y="630" width="150" height="42" rx="4" fill="#1a0a0a" stroke="#f97316" stroke-width="1.5"/>
+  <text x="761" y="648" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#fb923c">ALERT</text>
+  <text x="761" y="662" text-anchor="middle" font-size="7.5" fill="#475569">block pipeline · notify</text>
+
+  <!-- soda1 pass → embedding -->
+  <line x1="440" y1="602" x2="440" y2="644" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="450" y="628" font-size="7.5" fill="#16a34a">PASS</text>
+
+  <!-- ── EMBEDDING PIPELINE ─────────────────────────── -->
+  <rect x="220" y="644" width="440" height="62" rx="4" fill="#0f2017" stroke="#16a34a" stroke-width="1.5"/>
+  <rect x="220" y="644" width="3" height="62" rx="1" fill="#16a34a"/>
+  <text x="440" y="666" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#4ade80">PySpark mapPartitions</text>
+  <text x="440" y="681" text-anchor="middle" font-size="8.5" fill="#94a3b8">parallel OpenAI Embeddings API calls</text>
+  <text x="440" y="695" text-anchor="middle" font-size="7.5" fill="#475569">batched per partition · idempotent · chunk_id = vector_id</text>
+
+  <!-- embed → gold -->
+  <line x1="360" y1="706" x2="290" y2="758" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+  <!-- embed → pinecone -->
+  <line x1="520" y1="706" x2="590" y2="758" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ── GOLD ───────────────────────────────────────── -->
+  <rect x="80" y="758" width="350" height="70" rx="4" fill="#1c1407" stroke="#eab308" stroke-width="1.5" filter="url(#glow-gold)"/>
+  <rect x="80" y="758" width="3" height="70" rx="1" fill="#eab308"/>
+  <polygon points="96,796 106,780 116,796" fill="#eab308" opacity="0.9"/>
+  <text x="126" y="781" font-size="9.5" font-weight="bold" fill="#fde047">DELTA LAKE — GOLD</text>
+  <text x="126" y="796" font-size="8.5" fill="#94a3b8">embedding audit trail</text>
+  <text x="126" y="810" font-size="7.5" fill="#475569">chunk_id · vector_id · embedded_at · source</text>
+  <text x="126" y="822" font-size="7.5" fill="#475569">source of truth for Pinecone · S3</text>
+
+  <!-- ── PINECONE ───────────────────────────────────── -->
+  <rect x="458" y="758" width="300" height="70" rx="4" fill="#001a1a" stroke="#0891b2" stroke-width="1.5"/>
+  <rect x="458" y="758" width="3" height="70" rx="1" fill="#0891b2"/>
+  <text x="608" y="781" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#22d3ee">PINECONE</text>
+  <text x="608" y="796" text-anchor="middle" font-size="8.5" fill="#94a3b8">vector store · upserted from Gold</text>
+  <text x="608" y="810" text-anchor="middle" font-size="7.5" fill="#475569">metadata: source · chunk_id · document_id</text>
+  <text x="608" y="822" text-anchor="middle" font-size="7.5" fill="#475569">ingested_at · embedded_at</text>
+
+  <!-- gold → soda2 -->
+  <line x1="255" y1="828" x2="255" y2="870" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ── SODA CORE — FRESHNESS ───────────────────────── -->
+  <rect x="80" y="870" width="530" height="60" rx="4" fill="#1a1025" stroke="#a855f7" stroke-width="1.5"/>
+  <rect x="80" y="870" width="3" height="60" rx="1" fill="#a855f7"/>
+  <text x="345" y="891" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#c084fc">SODA CORE — FRESHNESS GATE</text>
+  <text x="345" y="906" text-anchor="middle" font-size="8.5" fill="#94a3b8">Gold checks · embedding freshness contracts</text>
+  <text x="345" y="920" text-anchor="middle" font-size="7.5" fill="#475569">Silver chunk without Gold record within 24h = CONTRACT VIOLATION</text>
+
+  <!-- freshness fail → alert2 -->
+  <path d="M610,900 Q700,900 700,840" fill="none" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arr-orange)"/>
+  <text x="650" y="886" font-size="7.5" fill="#f97316">FAIL</text>
+
+  <!-- gold → openlineage -->
+  <line x1="175" y1="930" x2="175" y2="972" stroke="#334155" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- pinecone → fastapi -->
+  <line x1="720" y1="828" x2="720" y2="972" stroke="#f472b6" stroke-width="1.5" marker-end="url(#arr-pink)"/>
+
+  <!-- ── OPENLINEAGE ────────────────────────────────── -->
+  <rect x="80" y="972" width="220" height="56" rx="4" fill="#0d1a0d" stroke="#4ade80" stroke-width="1.5"/>
+  <rect x="80" y="972" width="3" height="56" rx="1" fill="#4ade80"/>
+  <text x="190" y="993" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#4ade80">OPENLINEAGE</text>
+  <text x="190" y="1008" text-anchor="middle" font-size="8" fill="#94a3b8">lineage across all layers</text>
+  <text x="190" y="1020" text-anchor="middle" font-size="7.5" fill="#475569">source → chunk → embedding → vector</text>
+
+  <!-- ── AIRFLOW ────────────────────────────────────── -->
+  <rect x="328" y="972" width="260" height="56" rx="4" fill="#0d1117" stroke="#22d3ee" stroke-width="1.5"/>
+  <rect x="328" y="972" width="3" height="56" rx="1" fill="#22d3ee"/>
+  <text x="458" y="993" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#22d3ee">AIRFLOW DAGs</text>
+  <text x="458" y="1008" text-anchor="middle" font-size="8" fill="#94a3b8">full pipeline · nightly refresh</text>
+  <text x="458" y="1020" text-anchor="middle" font-size="7.5" fill="#475569">orchestrates all PySpark jobs</text>
+
+  <!-- airflow orchestration arrow back up -->
+  <path d="M458,972 Q458,940 458,920 Q458,900 820,900 Q860,900 860,380 Q860,266 610,258" fill="none" stroke="#22d3ee" stroke-width="1" stroke-dasharray="5 4" opacity="0.4" marker-end="url(#arr-cyan)"/>
+
+  <!-- ── FASTAPI ─────────────────────────────────────── -->
+  <rect x="616" y="972" width="222" height="56" rx="4" fill="#1a0d1a" stroke="#f472b6" stroke-width="1.5"/>
+  <rect x="616" y="972" width="3" height="56" rx="1" fill="#f472b6"/>
+  <text x="727" y="993" text-anchor="middle" font-size="9.5" font-weight="bold" fill="#f472b6">FASTAPI</text>
+  <text x="727" y="1008" text-anchor="middle" font-size="8" fill="#94a3b8">RAG query endpoint</text>
+  <text x="727" y="1020" text-anchor="middle" font-size="7.5" fill="#475569">Pinecone retrieval + OpenAI completion</text>
+
+  <!-- ── LAYER BADGES (left rail) ──────────────────── -->
+  <rect x="10" y="36"  width="56" height="16" rx="2" fill="#0f172a" stroke="#334155"/>
+  <text x="38" y="48" text-anchor="middle" font-size="7" letter-spacing="1" fill="#64748b">SOURCES</text>
+
+  <rect x="10" y="134" width="56" height="16" rx="2" fill="#0f1f3d" stroke="#1d4ed8"/>
+  <text x="38" y="146" text-anchor="middle" font-size="7" letter-spacing="1" fill="#1d4ed8">KAFKA</text>
+
+  <rect x="10" y="236" width="56" height="16" rx="2" fill="#0f2017" stroke="#16a34a"/>
+  <text x="38" y="248" text-anchor="middle" font-size="7" letter-spacing="1" fill="#16a34a">STREAM</text>
+
+  <rect x="10" y="338" width="56" height="16" rx="2" fill="#1c1407" stroke="#b45309"/>
+  <text x="38" y="350" text-anchor="middle" font-size="7" letter-spacing="1" fill="#b45309">BRONZE</text>
+
+  <rect x="10" y="440" width="56" height="16" rx="2" fill="#111827" stroke="#6366f1"/>
+  <text x="38" y="452" text-anchor="middle" font-size="7" letter-spacing="1" fill="#6366f1">SILVER</text>
+
+  <rect x="10" y="542" width="56" height="16" rx="2" fill="#1a1025" stroke="#a855f7"/>
+  <text x="38" y="554" text-anchor="middle" font-size="7" letter-spacing="1" fill="#a855f7">QUALITY</text>
+
+  <rect x="10" y="644" width="56" height="16" rx="2" fill="#0f2017" stroke="#16a34a"/>
+  <text x="38" y="656" text-anchor="middle" font-size="7" letter-spacing="1" fill="#16a34a">EMBED</text>
+
+  <rect x="10" y="758" width="56" height="16" rx="2" fill="#1c1407" stroke="#eab308"/>
+  <text x="38" y="770" text-anchor="middle" font-size="7" letter-spacing="1" fill="#eab308">GOLD</text>
+
+  <rect x="10" y="870" width="56" height="16" rx="2" fill="#1a1025" stroke="#a855f7"/>
+  <text x="38" y="882" text-anchor="middle" font-size="7" letter-spacing="1" fill="#a855f7">FRESH</text>
+
+  <rect x="10" y="972" width="56" height="16" rx="2" fill="#0d1117" stroke="#22d3ee"/>
+  <text x="38" y="984" text-anchor="middle" font-size="7" letter-spacing="1" fill="#22d3ee">SERVE</text>
+
+  <!-- ── LEGEND ─────────────────────────────────────── -->
+  <rect x="10" y="420" width="0" height="0" rx="2"/>
+
+</svg>
