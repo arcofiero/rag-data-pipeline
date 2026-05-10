@@ -1,0 +1,17 @@
+# Silver → Gold Quality Gate
+# Soda Core checks run by Airflow before the Gold embedding job.
+# A failed check raises SodaScanError and blocks gold_embed_job.
+# Placeholder — Day 5
+
+checks for silver_chunks:
+  - missing_count(content) = 0:
+      name: No null content in Silver
+  - missing_count(chunk_id) = 0:
+      name: No null chunk IDs
+  - min(char_count) >= 50:
+      name: Minimum normalized chunk length
+  - schema:
+      name: Silver schema conformance
+      fail:
+        when required column missing:
+          [chunk_id, document_id, source, content, chunk_index, ingested_at, normalized_at]

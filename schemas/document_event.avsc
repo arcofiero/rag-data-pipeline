@@ -1,0 +1,49 @@
+{
+  "type": "record",
+  "name": "DocumentEvent",
+  "namespace": "com.rag.pipeline",
+  "doc": "Avro schema for raw document events published to the raw-documents Kafka topic. Placeholder — Day 3.",
+  "fields": [
+    {
+      "name": "document_id",
+      "type": "string",
+      "doc": "Globally unique document identifier"
+    },
+    {
+      "name": "source",
+      "type": "string",
+      "doc": "Origin of the document — S3 path, URL, or database table"
+    },
+    {
+      "name": "content",
+      "type": "string",
+      "doc": "Raw text content of the document or chunk"
+    },
+    {
+      "name": "content_type",
+      "type": {
+        "type": "enum",
+        "name": "ContentType",
+        "symbols": ["PDF", "WEB", "STRUCTURED", "UNKNOWN"]
+      },
+      "doc": "Type of the source document"
+    },
+    {
+      "name": "metadata",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {},
+      "doc": "Arbitrary key-value metadata from the source system"
+    },
+    {
+      "name": "produced_at",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Unix timestamp (ms) when the event was produced"
+    }
+  ]
+}

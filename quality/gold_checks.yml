@@ -1,0 +1,24 @@
+# Gold Freshness Contract
+# Soda Core checks run nightly by the refresh DAG.
+# Flags Silver chunks with no corresponding Gold embedding record within 24 hours.
+# A violation triggers an alert and blocks the next scheduled pipeline run.
+# Placeholder — Day 7
+
+checks for silver_chunks:
+  - freshness(ingested_at) < 24h:
+      name: All Silver chunks embedded within 24-hour SLA
+      filter: >
+        chunk_id NOT IN (SELECT chunk_id FROM gold_embeddings)
+      fail:
+        when not between: [0%, 0%]
+
+checks for gold_embeddings:
+  - missing_count(vector_id) = 0:
+      name: No null vector IDs in Gold
+  - missing_count(embedded_at) = 0:
+      name: No null embedded_at timestamps
+  - schema:
+      name: Gold schema conformance
+      fail:
+        when required column missing:
+          [chunk_id, vector_id, document_id, source, embedded_at, model_version]

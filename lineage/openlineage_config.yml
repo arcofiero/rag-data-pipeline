@@ -1,0 +1,25 @@
+# OpenLineage Configuration — Day 9
+# Configures the OpenLineage Python client for emitting dataset-level lineage events
+# at each job boundary: Kafka → Bronze, Bronze → Silver, Silver → Gold, Gold → Pinecone.
+# Placeholder — full emitter implementation in lineage/emitter.py on Day 9.
+
+transport:
+  type: http
+  url: ${OPENLINEAGE_URL}
+  auth:
+    type: api_key
+    apiKey: ${OPENLINEAGE_API_KEY}
+
+facets:
+  spark_version:
+    enabled: true
+  spark_integration:
+    enabled: true
+
+namespace: rag-pipeline
+
+# Job name conventions:
+#   spark.bronze_write       — Kafka → Bronze Delta
+#   spark.silver_transform   — Bronze → Silver Delta
+#   spark.gold_embed         — Silver → Gold Delta (embedding)
+#   spark.pinecone_upsert    — Gold → Pinecone
