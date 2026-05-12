@@ -1,0 +1,34 @@
+{
+  "type": "record",
+  "name": "DeadLetterEvent",
+  "namespace": "com.rag.pipeline",
+  "doc": "Envelope for any event that could not be processed or validated successfully. Routing malformed events to a typed DLQ preserves the original payload for forensics, replay, or alerting without blocking the main pipeline. The DLQ topic (raw-documents-dlq) uses 30-day retention to give operators enough window for manual review and replay.",
+  "fields": [
+    {
+      "name": "failed_at",
+      "type": "string",
+      "doc": "ISO-8601 UTC timestamp when the failure was detected and the event was routed to the DLQ."
+    },
+    {
+      "name": "source_topic",
+      "type": "string",
+      "doc": "The Kafka topic this event was intended for before being redirected to the DLQ (e.g. raw-documents)."
+    },
+    {
+      "name": "error_reason",
+      "type": "string",
+      "doc": "Human-readable description of why the event was rejected. Should be specific enough to act on (e.g. 'Missing required field: content') rather than a generic error code."
+    },
+    {
+      "name": "original_payload",
+      "type": "string",
+      "doc": "The original raw payload as a UTF-8 string. Stored as string to keep this schema self-contained — embedding another Avro record would create a circular schema dependency when the source record itself failed validation."
+    },
+    {
+      "name": "dlq_schema_version",
+      "type": "string",
+      "default": "1.0",
+      "doc": "Version of the DLQ envelope schema itself, independent of the source schema version."
+    }
+  ]
+}

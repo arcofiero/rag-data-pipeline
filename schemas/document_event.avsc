@@ -2,31 +2,31 @@
   "type": "record",
   "name": "DocumentEvent",
   "namespace": "com.rag.pipeline",
-  "doc": "Avro schema for raw document events published to the raw-documents Kafka topic. Placeholder — Day 3.",
+  "doc": "Represents a raw ingested document event published to the raw-documents Kafka topic. All three source types (PDF, web crawl, structured record) share this schema. Source-specific attributes are captured in the metadata map to avoid per-source schema fragmentation — the metadata map is typed as map<string,string> which enforces value types while allowing arbitrary keys per source.",
   "fields": [
     {
       "name": "document_id",
       "type": "string",
-      "doc": "Globally unique document identifier"
+      "doc": "UUID v4. Used as the Kafka message key and as the lineage anchor across Bronze, Silver, Gold, and Pinecone layers."
     },
     {
-      "name": "source",
+      "name": "source_type",
+      "type": {
+        "type": "enum",
+        "name": "SourceType",
+        "symbols": ["PDF", "WEB", "STRUCTURED", "UNKNOWN"]
+      },
+      "doc": "Discriminator for ingestion path. Downstream Spark jobs branch on this field to apply source-specific parsing logic."
+    },
+    {
+      "name": "source_uri",
       "type": "string",
-      "doc": "Origin of the document — S3 path, URL, or database table"
+      "doc": "Canonical URI pointing to the document origin: s3:// for PDFs, https:// for web pages, postgres:// for structured records."
     },
     {
       "name": "content",
       "type": "string",
-      "doc": "Raw text content of the document or chunk"
-    },
-    {
-      "name": "content_type",
-      "type": {
-        "type": "enum",
-        "name": "ContentType",
-        "symbols": ["PDF", "WEB", "STRUCTURED", "UNKNOWN"]
-      },
-      "doc": "Type of the source document"
+      "doc": "Raw extracted text. For PDFs: OCR/extraction output. For web: cleaned body text. For structured: serialized row representation."
     },
     {
       "name": "metadata",
@@ -35,7 +35,12 @@
         "values": "string"
       },
       "default": {},
-      "doc": "Arbitrary key-value metadata from the source system"
+      "doc": "Source-specific attributes as string key-value pairs (e.g. author, page_count for PDFs; crawled_at, word_count for web). All values serialized as strings for schema stability."
+    },
+    {
+      "name": "ingested_at",
+      "type": "string",
+      "doc": "ISO-8601 UTC timestamp of when this event was produced to Kafka by the producer."
     },
     {
       "name": "produced_at",
@@ -43,7 +48,13 @@
         "type": "long",
         "logicalType": "timestamp-millis"
       },
-      "doc": "Unix timestamp (ms) when the event was produced"
+      "doc": "Unix timestamp in milliseconds when the event was produced. Kept for Avro logical type compatibility with Schema Registry timestamp tracking."
+    },
+    {
+      "name": "schema_version",
+      "type": "string",
+      "default": "1.0",
+      "doc": "Explicit schema version string. Allows consumers to apply version-specific parsing without solely relying on Schema Registry subject versions."
     }
   ]
 }
