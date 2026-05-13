@@ -45,6 +45,7 @@ from pyspark.sql.types import (
     StringType,
     StructField,
     StructType,
+    TimestampType,
 )
 
 load_dotenv()
@@ -88,6 +89,7 @@ def _bronze_schema() -> StructType:
         StructField("source", StringType(), True),
         StructField("ingested_at", StringType(), True),
         StructField("ingestion_date", StringType(), False),
+        StructField("produced_at", TimestampType(), True),
     ])
 
 
@@ -105,6 +107,10 @@ def build_spark() -> SparkSession:
             "spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
+        # NOTE: static credentials for local dev only — use IAM instance profile in
+        # production by removing these three .config() calls and setting
+        # spark.hadoop.fs.s3a.aws.credentials.provider to
+        # com.amazonaws.auth.InstanceProfileCredentialsProvider
         .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
         .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
         .config(
@@ -171,6 +177,12 @@ def _chunk_partition(rows: Iterator) -> Iterator:
         source = row["source_type"] or "UNKNOWN"
         ingested_at = row["ingested_at"] or ""
 
+        produced_at_raw = row["produced_at"] if row["produced_at"] else None
+        try:
+            produced_at = datetime.fromisoformat(produced_at_raw) if produced_at_raw else None
+        except (ValueError, TypeError):
+            produced_at = None
+
         try:
             chunks = chunk_text(doc_id, content, CHUNK_SIZE, CHUNK_OVERLAP)
         except Exception as exc:
@@ -182,12 +194,13 @@ def _chunk_partition(rows: Iterator) -> Iterator:
         for chunk in chunks:
             yield (
                 chunk.chunk_id,
-                chunk.chunk_index,
+                int(chunk.chunk_index),
                 chunk.content,
                 doc_id,
                 source,
                 ingested_at,
                 ingestion_date,
+                produced_at,
             )
 
 
@@ -221,7 +234,7 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
     )
     dlq_count = dlq_df.count()
     if dlq_count > 0:
-        dlq_df.write.format("delta").mode("append").save(DELTA_BRONZE_DLQ_PATH)
+        dlq_df.write.format("delta").mode("append").option("mergeSchema", "true").save(DELTA_BRONZE_DLQ_PATH)
         logger.warning(
             "Routed rows to Bronze DLQ | batch_id={} count={}",
             batch_id, dlq_count,
@@ -233,6 +246,7 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
         StructField("source_type", StringType(), True),
         StructField("content", StringType(), True),
         StructField("ingested_at", StringType(), True),
+        StructField("produced_at", StringType(), True),
     ])
     valid_df = (
         annotated
@@ -253,13 +267,15 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
     chunked_df = spark.createDataFrame(chunked_rdd, schema=_bronze_schema())
 
     # 5. Deduplicate within batch ------------------------------------------------
-    chunked_df = chunked_df.dropDuplicates(["chunk_id"])
-    chunk_count = chunked_df.count()
+    chunks_df = chunked_df.dropDuplicates(["chunk_id"])
+    chunks_df = chunks_df.cache()
+    chunks_written = chunks_df.count()
     logger.info(
-        "Chunks after dedup | batch_id={} count={}", batch_id, chunk_count
+        "Chunks after dedup | batch_id={} count={}", batch_id, chunks_written
     )
 
-    if chunk_count == 0:
+    if chunks_written == 0:
+        chunks_df.unpersist()
         return
 
     # 6. MERGE into Bronze (or create on first run) -----------------------------
@@ -267,16 +283,16 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
         bronze = DeltaTable.forPath(spark, DELTA_BRONZE_PATH)
         (
             bronze.alias("tgt")
-            .merge(chunked_df.alias("src"), "tgt.chunk_id = src.chunk_id")
+            .merge(chunks_df.alias("src"), "tgt.chunk_id = src.chunk_id")
             .whenNotMatchedInsertAll()
             .execute()
         )
         logger.info(
-            "Merged into Bronze | batch_id={} chunks={}", batch_id, chunk_count
+            "Merged into Bronze | batch_id={} chunks={}", batch_id, chunks_written
         )
     else:
         (
-            chunked_df.write
+            chunks_df.write
             .format("delta")
             .mode("append")
             .partitionBy("source", "ingestion_date")
@@ -284,8 +300,14 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
         )
         logger.info(
             "Created Bronze Delta table | batch_id={} chunks={}",
-            batch_id, chunk_count,
+            batch_id, chunks_written,
         )
+
+    chunks_df.unpersist()
+    logger.info(
+        "Batch complete | batch_id={} valid_count={} dlq_count={} chunks_written={}",
+        batch_id, valid_count, dlq_count, chunks_written,
+    )
 
 
 # ─── Streaming entry point ──────────────────────────────────────────────────────

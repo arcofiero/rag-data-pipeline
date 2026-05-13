@@ -113,6 +113,29 @@ def test_chunk_index_sequential():
     assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
 
 
+def test_chunk_index_is_int():
+    text = "type check " * 100
+    chunks = chunk_text("doc-type", text, chunk_size=256, overlap=32)
+    for chunk in chunks:
+        assert isinstance(chunk.chunk_index, int), (
+            f"chunk_index must be int, got {type(chunk.chunk_index)}"
+        )
+
+
+def test_overlap_carries_context():
+    # text = 200 "a"s followed by 200 "b"s
+    # chunk_size=200, overlap=50 → step=150
+    # chunk 0: text[0:200]   → all "a"s
+    # chunk 1: text[150:350] → text[150:200] = "a"s, text[200:350] = "b"s
+    # chunk 1 must contain both "a" and "b" to prove overlap carries context
+    text = "a" * 200 + "b" * 200
+    chunks = chunk_text("doc-overlap", text, chunk_size=200, overlap=50)
+    assert len(chunks) >= 2, "Expected at least 2 chunks"
+    second_content = chunks[1].content
+    assert "a" in second_content, "Overlap chunk should contain 'a' from previous window"
+    assert "b" in second_content, "Overlap chunk should contain 'b' from next window"
+
+
 # ─── _make_chunk_id ─────────────────────────────────────────────────────────────
 
 
