@@ -1,17 +1,39 @@
 # Bronze → Silver Quality Gate
-# Soda Core checks run by Airflow before the Silver transform job.
-# A failed check raises SodaScanError and blocks silver_transform_job.
-# Placeholder — Day 5
+# Run by Airflow (via SodaScanOperator) before the Silver transform job.
+# A failed check raises RuntimeError in silver_job._run_soda_scan()
+# and blocks the Silver MERGE — no bad data crosses the Bronze→Silver boundary.
+# Dataset name must match: "bronze_documents"
 
 checks for bronze_documents:
+
   - missing_count(content) = 0:
       name: No null content in Bronze
+      fail: when > 0
+
+  - missing_count(chunk_id) = 0:
+      name: No null chunk IDs in Bronze
+      fail: when > 0
+
+  - missing_count(document_id) = 0:
+      name: No null document IDs in Bronze
+      fail: when > 0
+
   - min(char_count) >= 50:
       name: Minimum chunk length 50 characters
+      fail: when < 50
+
   - duplicate_count(chunk_id) = 0:
       name: No duplicate chunk IDs in Bronze
+      fail: when > 0
+
+  - invalid_count(source) = 0:
+      name: Source type is a known value
+      valid values: [PDF, WEB, STRUCTURED, UNKNOWN]
+      fail: when > 0
+
   - schema:
       name: Bronze schema conformance
       fail:
         when required column missing:
-          [document_id, source, content, chunk_id, ingested_at]
+          [chunk_id, document_id, chunk_index, source, content,
+           ingested_at, ingestion_date]

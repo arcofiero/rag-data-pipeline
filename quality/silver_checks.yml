@@ -1,17 +1,58 @@
 # Silver → Gold Quality Gate
-# Soda Core checks run by Airflow before the Gold embedding job.
-# A failed check raises SodaScanError and blocks gold_embed_job.
-# Placeholder — Day 5
+# Run by Airflow before the Gold embedding job.
+# Dataset name: "silver_chunks"
 
 checks for silver_chunks:
+
   - missing_count(content) = 0:
       name: No null content in Silver
+      fail: when > 0
+
   - missing_count(chunk_id) = 0:
-      name: No null chunk IDs
+      name: No null chunk IDs in Silver
+      fail: when > 0
+
+  - missing_count(document_id) = 0:
+      name: No null document IDs in Silver
+      fail: when > 0
+
+  - missing_count(word_count) = 0:
+      name: No null word counts in Silver
+      fail: when > 0
+
+  - missing_count(char_count) = 0:
+      name: No null char counts in Silver
+      fail: when > 0
+
+  - missing_count(processed_at) = 0:
+      name: No null processed_at timestamps
+      fail: when > 0
+
+  - missing_count(language) = 0:
+      name: No null language codes
+      fail: when > 0
+
+  - min(word_count) >= 10:
+      name: Minimum word count 10 in Silver
+      fail: when < 10
+
   - min(char_count) >= 50:
-      name: Minimum normalized chunk length
+      name: Minimum char count 50 in Silver
+      fail: when < 50
+
+  - duplicate_count(chunk_id) = 0:
+      name: No duplicate chunk IDs in Silver
+      fail: when > 0
+
+  - invalid_count(source) = 0:
+      name: Source type is a known value
+      valid values: [PDF, WEB, STRUCTURED, UNKNOWN]
+      fail: when > 0
+
   - schema:
       name: Silver schema conformance
       fail:
         when required column missing:
-          [chunk_id, document_id, source, content, chunk_index, ingested_at, normalized_at]
+          [chunk_id, document_id, chunk_index, source, content,
+           word_count, char_count, language, ingested_at,
+           processed_at, processed_date]
