@@ -305,6 +305,8 @@ def run_embedding_pipeline() -> None:
         spark.stop()
         return
 
+    silver_count = unembedded_df.count()
+
     gold_rdd  = unembedded_df.rdd.mapPartitions(_embed_and_upsert_partition)
     gold_df   = spark.createDataFrame(gold_rdd, schema=_gold_schema())
     gold_df   = gold_df.cache()
@@ -320,8 +322,8 @@ def run_embedding_pipeline() -> None:
         _run_soda_scan(spark, gold_for_check, GOLD_CHECKS_PATH, "gold_embeddings")
 
     logger.info(
-        "Embedding pipeline complete | embedded={} gold_written={}",
-        embedded_count, written_count,
+        "Embedding pipeline complete | silver_read={} embedded={} gold_written={}",
+        silver_count, embedded_count, written_count,
     )
     spark.stop()
 
