@@ -36,6 +36,8 @@ class TestFullPipelineDAG:
         assert self.dag.max_active_runs == 1
 
     def test_schedule_is_every_30_minutes(self):
+        # Note: Airflow 2.x stores schedule as dag.schedule_interval on the object.
+        # When migrating to Airflow 3, change this assertion to dag.schedule.
         assert self.dag.schedule_interval == "*/30 * * * *"
 
     def test_expected_task_ids_present(self):
@@ -92,6 +94,8 @@ class TestNightlyRefreshDAG:
         assert self.dag.max_active_runs == 1
 
     def test_schedule_is_nightly_2am(self):
+        # Note: Airflow 2.x stores schedule as dag.schedule_interval on the object.
+        # When migrating to Airflow 3, change this assertion to dag.schedule.
         assert self.dag.schedule_interval == "0 2 * * *"
 
     def test_expected_task_ids_present(self):
