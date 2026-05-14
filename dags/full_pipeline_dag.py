@@ -154,7 +154,7 @@ with DAG(
     dag_id="rag_full_pipeline",
     default_args=DEFAULT_ARGS,
     description="Full RAG ingestion pipeline: Bronze → Silver → Gold → Pinecone",
-    schedule_interval="*/30 * * * *",
+    schedule="*/30 * * * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,

@@ -206,7 +206,7 @@ with DAG(
     dag_id="rag_nightly_refresh",
     default_args=DEFAULT_ARGS,
     description="Nightly refresh: detect and re-embed stale Silver chunks",
-    schedule_interval="0 2 * * *",
+    schedule="0 2 * * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
