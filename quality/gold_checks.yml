@@ -26,7 +26,7 @@ checks for gold_embeddings:
 
   - invalid_count(model) = 0:
       name: Embedding model is a known value
-      valid values: [text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002]
+      valid values: [text-embedding-3-small, text-embedding-3-large, text-embedding-ada-002, models/gemini-embedding-001, models/gemini-embedding-2, models/text-embedding-004]
       fail: when > 0
 
   - duplicate_count(vector_id) = 0:

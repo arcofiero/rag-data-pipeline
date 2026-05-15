@@ -79,7 +79,10 @@ Cite the source of each claim using the chunk_id provided in the context."""
 from openai import OpenAI
 from pinecone import Pinecone
 
-_openai_client   = OpenAI(api_key=OPENAI_API_KEY, max_retries=3)
+try:
+    _openai_client = OpenAI(api_key=OPENAI_API_KEY, max_retries=3) if OPENAI_API_KEY else None
+except Exception:
+    _openai_client = None
 _pinecone_client = Pinecone(api_key=PINECONE_API_KEY)
 try:
     # newer Pinecone SDK resolves the index host eagerly via an HTTP call;
@@ -152,11 +155,16 @@ app = FastAPI(
 # ─── Core RAG logic (pure functions for testability) ────────────────────────────
 
 def _embed_query_gemini(query: str) -> List[float]:
-    """Gemini embedding via google-genai SDK. Produces 768-dim vectors."""
+    """Gemini embedding via google-genai SDK. output_dimensionality=1536 matches the Pinecone index."""
     try:
         from google import genai as _genai
+        from google.genai import types as _types
         _client = _genai.Client(api_key=GEMINI_API_KEY)
-        result  = _client.models.embed_content(model=GEMINI_EMBEDDING_MODEL, contents=query)
+        result  = _client.models.embed_content(
+            model=GEMINI_EMBEDDING_MODEL,
+            contents=query,
+            config=_types.EmbedContentConfig(output_dimensionality=1536),
+        )
         return result.embeddings[0].values
     except Exception as exc:
         logger.error("Gemini embedding call failed: {}", exc)
@@ -172,6 +180,8 @@ def embed_query(query: str) -> List[float]:
     """
     if EMBEDDING_PROVIDER == "gemini":
         return _embed_query_gemini(query)
+    if _openai_client is None:
+        raise HTTPException(status_code=503, detail="OpenAI client not configured — set OPENAI_API_KEY")
     try:
         response = _openai_client.embeddings.create(
             input=[query],

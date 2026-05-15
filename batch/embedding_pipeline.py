@@ -123,25 +123,46 @@ def _embed_and_upsert_partition(rows: Iterator) -> Iterator:
     """
     import os as _os
     from datetime import datetime as _dt, timezone as _tz
-    from openai import OpenAI
     from pinecone import Pinecone
 
-    api_key     = _os.environ.get("OPENAI_API_KEY", "")
-    embed_model = _os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    embedding_provider = _os.environ.get("EMBEDDING_PROVIDER", "openai").lower()
+    embed_model  = (
+        _os.environ.get("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
+        if embedding_provider == "gemini"
+        else _os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    )
     pc_api_key  = _os.environ.get("PINECONE_API_KEY", "")
     pc_index    = _os.environ.get("PINECONE_INDEX_NAME", "rag-pipeline")
     batch_size  = int(_os.environ.get("EMBED_BATCH_SIZE", "512"))
     pc_batch    = int(_os.environ.get("PINECONE_BATCH_SIZE", "100"))
 
-    openai_client   = OpenAI(api_key=api_key, max_retries=3)
+    if embedding_provider == "gemini":
+        from google import genai as _genai
+        from google.genai import types as _gtypes
+        _gemini_client = _genai.Client(api_key=_os.environ.get("GEMINI_API_KEY", ""))
+    else:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=_os.environ.get("OPENAI_API_KEY", ""), max_retries=3)
+
     pinecone_client = Pinecone(api_key=pc_api_key)
     index           = pinecone_client.Index(pc_index)
 
     def _g(row, field):
         try:
             return row[field]
-        except TypeError:
+        except (TypeError, ValueError, KeyError):
             return getattr(row, field, None)
+
+    def _get_embeddings(texts):
+        if embedding_provider == "gemini":
+            result = _gemini_client.models.embed_content(
+                model=embed_model,
+                contents=texts,
+                config=_gtypes.EmbedContentConfig(output_dimensionality=1536),
+            )
+            return [e.values for e in result.embeddings]
+        response = _openai_client.embeddings.create(input=texts, model=embed_model)
+        return [item.embedding for item in response.data]
 
     partition_rows = list(rows)
     if not partition_rows:
@@ -156,12 +177,12 @@ def _embed_and_upsert_partition(rows: Iterator) -> Iterator:
         ingested   = [_g(r, "ingested_at") for r in batch]
 
         try:
-            response   = openai_client.embeddings.create(input=texts, model=embed_model)
-            embeddings = [item.embedding for item in response.data]
+            embeddings = _get_embeddings(texts)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).error(
-                "OpenAI embedding call failed for batch of %d chunks: %s", len(batch), exc
+                "Embedding call failed (%s) for batch of %d chunks: %s",
+                embedding_provider, len(batch), exc,
             )
             continue
 
@@ -180,6 +201,7 @@ def _embed_and_upsert_partition(rows: Iterator) -> Iterator:
                     "ingested_at": ingested[i] or "",
                     "embedded_at": embedded_at,
                     "model":       embed_model,
+                    "content":     texts[i][:1000],  # truncated for Pinecone metadata size limit
                 },
             })
 
@@ -252,20 +274,20 @@ def _run_soda_scan(spark, df, checks_path: Path, dataset_name: str) -> None:
         logger.warning("soda-core not installed — skipping quality gate for {}", dataset_name)
         return
     logger.info("Running Soda Core checks | dataset={} checks={}", dataset_name, checks_path)
+    df.createOrReplaceTempView(dataset_name)
     scan = Scan()
     scan.set_scan_definition_name(f"rag-pipeline-{dataset_name}")
     scan.set_data_source_name(dataset_name)
     scan.add_spark_session(spark, data_source_name=dataset_name)
-    scan.add_dataframe_datasets(dataset_name, [(dataset_name, df)])
     with checks_path.open() as fh:
         scan.add_sodacl_yaml_str(fh.read())
     scan.execute()
-    if scan.has_check_failures():
-        failed = [c.name for c in scan.get_checks() if c.outcome and c.outcome.value == "fail"]
-        logger.error("Soda Core check failures | dataset={} failed={}", dataset_name, failed)
+    if scan.has_check_fails():
+        failed_text = scan.get_checks_fail_text()
+        logger.error("Soda Core check failures | dataset={} failed={}", dataset_name, failed_text)
         raise RuntimeError(
             f"Soda Core quality gate failed for {dataset_name}. "
-            f"Failed checks: {failed}. Blocking downstream job."
+            f"Failed checks: {failed_text}. Blocking downstream job."
         )
     logger.info("Soda Core checks passed | dataset={}", dataset_name)
 

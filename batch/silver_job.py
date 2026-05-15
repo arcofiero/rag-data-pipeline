@@ -136,7 +136,7 @@ def _normalize_partition(rows: Iterator) -> Iterator:
     def _g(row, field):
         try:
             return row[field]
-        except TypeError:
+        except (TypeError, ValueError, KeyError):
             return getattr(row, field, None)
 
     def _parse_meta(meta_str):
@@ -261,21 +261,21 @@ def _run_soda_scan(spark, df, checks_path: Path, dataset_name: str) -> None:
         return
 
     logger.info("Running Soda Core checks | dataset={} checks={}", dataset_name, checks_path)
+    df.createOrReplaceTempView(dataset_name)
     scan = Scan()
     scan.set_scan_definition_name(f"rag-pipeline-{dataset_name}")
     scan.set_data_source_name(dataset_name)
     scan.add_spark_session(spark, data_source_name=dataset_name)
-    scan.add_dataframe_datasets(dataset_name, [(dataset_name, df)])
     with checks_path.open() as fh:
         scan.add_sodacl_yaml_str(fh.read())
     scan.execute()
 
-    if scan.has_check_failures():
-        failed = [c.name for c in scan.get_checks() if c.outcome and c.outcome.value == "fail"]
-        logger.error("Soda Core check failures | dataset={} failed={}", dataset_name, failed)
+    if scan.has_check_fails():
+        failed_text = scan.get_checks_fail_text()
+        logger.error("Soda Core check failures | dataset={} failed={}", dataset_name, failed_text)
         raise RuntimeError(
             f"Soda Core quality gate failed for {dataset_name}. "
-            f"Failed checks: {failed}. Blocking downstream job."
+            f"Failed checks: {failed_text}. Blocking downstream job."
         )
     logger.info("Soda Core checks passed | dataset={}", dataset_name)
 
