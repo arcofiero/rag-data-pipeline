@@ -20,6 +20,8 @@ os.environ.setdefault("PINECONE_API_KEY",        "test-pc-key")
 os.environ.setdefault("PINECONE_INDEX_NAME",     "test-index")
 os.environ.setdefault("RAG_TOP_K",               "5")
 os.environ.setdefault("RAG_MAX_CONTEXT_CHARS",   "20000")
+os.environ.setdefault("CHAT_PROVIDER",           "openai")
+os.environ.setdefault("EMBEDDING_PROVIDER",      "openai")
 
 
 def _make_pinecone_match(chunk_id="chunk-1", score=0.92, source="PDF", doc_id="doc-1", content="This is chunk content."):
@@ -57,6 +59,7 @@ def mock_clients(monkeypatch):
 
     import api.rag_endpoint as ep
     monkeypatch.setattr(ep, "_openai_client",  openai_mock)
+    monkeypatch.setattr(ep, "_chat_client",    openai_mock)  # same mock — default provider is openai
     monkeypatch.setattr(ep, "_pinecone_index", pinecone_mock)
     return openai_mock, pinecone_mock
 
