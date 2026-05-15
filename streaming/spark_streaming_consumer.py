@@ -61,9 +61,6 @@ DELTA_BRONZE_PATH = os.getenv("DELTA_BRONZE_PATH", "")
 DELTA_BRONZE_DLQ_PATH = os.getenv("DELTA_BRONZE_DLQ_PATH", "")
 SPARK_CHECKPOINT_PATH = os.getenv("SPARK_CHECKPOINT_PATH", "")
 
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "64"))
 MAX_OFFSETS = int(os.getenv("MAX_OFFSETS_PER_TRIGGER", "5000"))
@@ -107,27 +104,11 @@ def build_spark() -> SparkSession:
             "spark.sql.catalog.spark_catalog",
             "org.apache.spark.sql.delta.catalog.DeltaCatalog",
         )
-        # NOTE: static credentials for local dev only — use IAM instance profile in
-        # production by removing these three .config() calls and setting
-        # spark.hadoop.fs.s3a.aws.credentials.provider to
-        # com.amazonaws.auth.InstanceProfileCredentialsProvider
-        .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
-        .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
-        .config(
-            "spark.hadoop.fs.s3a.impl",
-            "org.apache.hadoop.fs.s3a.S3AFileSystem",
-        )
-        .config(
-            "spark.hadoop.fs.s3a.aws.credentials.provider",
-            "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
-        )
         .config(
             "spark.jars.packages",
             ",".join([
                 "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1",
                 "io.delta:delta-spark_2.12:3.2.0",
-                "org.apache.hadoop:hadoop-aws:3.3.4",
-                "com.amazonaws:aws-java-sdk-bundle:1.12.261",
             ]),
         )
         .getOrCreate()
@@ -314,12 +295,16 @@ def process_batch(batch_df: DataFrame, batch_id: int) -> None:
 
 
 def run_streaming() -> None:
+    from lineage.emitter import bronze_emitter
+
+    emitter = bronze_emitter()
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
     logger.info(
         "Starting streaming job | topic={} bronze={}",
         RAW_TOPIC, DELTA_BRONZE_PATH,
     )
+    emitter.emit_start()
 
     sasl_jaas = (
         "org.apache.kafka.common.security.plain.PlainLoginModule required "
@@ -350,7 +335,12 @@ def run_streaming() -> None:
     )
 
     logger.info("Streaming query active | awaiting termination...")
-    query.awaitTermination()
+    try:
+        query.awaitTermination()
+        emitter.emit_complete()
+    except Exception as exc:
+        emitter.emit_fail(error=exc)
+        raise
 
 
 if __name__ == "__main__":

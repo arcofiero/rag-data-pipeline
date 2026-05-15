@@ -45,8 +45,6 @@ load_dotenv()
 
 DELTA_SILVER_PATH      = os.environ.get("DELTA_SILVER_PATH", "")
 DELTA_GOLD_PATH        = os.environ.get("DELTA_GOLD_PATH", "")
-AWS_ACCESS_KEY_ID      = os.environ.get("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY  = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 OPENAI_API_KEY         = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_EMBEDDING_MODEL = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 PINECONE_API_KEY       = os.environ.get("PINECONE_API_KEY", "")
@@ -75,12 +73,6 @@ def _gold_schema():
 
 
 def _build_spark():
-    """
-    NOTE: static credentials for local dev only — use IAM instance profile
-    in production by removing credential .config() calls and setting
-    spark.hadoop.fs.s3a.aws.credentials.provider to
-    com.amazonaws.auth.InstanceProfileCredentialsProvider
-    """
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
     builder = (
@@ -88,16 +80,7 @@ def _build_spark():
         .appName("rag-gold-embedding")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
-        .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.endpoint", "s3.amazonaws.com")
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-        .config("spark.jars.packages", ",".join([
-            "io.delta:delta-spark_2.12:3.2.0",
-            "org.apache.hadoop:hadoop-aws:3.3.4",
-            "com.amazonaws:aws-java-sdk-bundle:1.12.261",
-        ]))
+        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
     )
     return configure_spark_with_delta_pip(builder).getOrCreate()
@@ -292,40 +275,50 @@ def run_embedding_pipeline() -> None:
     Full Gold embedding pipeline.
     Step order: Silver gate → anti-join read → embed+upsert → Gold write → Gold gate.
     """
+    from lineage.emitter import gold_emitter
+
+    emitter = gold_emitter()
     logger.info("Starting embedding pipeline | silver={} gold={}", DELTA_SILVER_PATH, DELTA_GOLD_PATH)
-    spark = _build_spark()
-    spark.sparkContext.setLogLevel("WARN")
+    emitter.emit_start()
 
-    silver_all = spark.read.format("delta").load(DELTA_SILVER_PATH)
-    _run_soda_scan(spark, silver_all, SILVER_CHECKS_PATH, "silver_chunks")
+    try:
+        spark = _build_spark()
+        spark.sparkContext.setLogLevel("WARN")
 
-    unembedded_df = _read_unembedded_silver(spark)
-    if unembedded_df.rdd.isEmpty():
-        logger.info("No unembedded Silver chunks — embedding pipeline exiting early")
+        silver_all = spark.read.format("delta").load(DELTA_SILVER_PATH)
+        _run_soda_scan(spark, silver_all, SILVER_CHECKS_PATH, "silver_chunks")
+
+        unembedded_df = _read_unembedded_silver(spark)
+        if unembedded_df.rdd.isEmpty():
+            logger.info("No unembedded Silver chunks — embedding pipeline exiting early")
+            spark.stop()
+            return
+
+        silver_count = unembedded_df.count()
+
+        gold_rdd  = unembedded_df.rdd.mapPartitions(_embed_and_upsert_partition)
+        gold_df   = spark.createDataFrame(gold_rdd, schema=_gold_schema())
+        gold_df   = gold_df.cache()
+
+        embedded_count = gold_df.count()
+        logger.info("Chunks embedded and upserted to Pinecone: {}", embedded_count)
+
+        written_count = _append_to_gold(gold_df, spark)
+        gold_df.unpersist()
+
+        if written_count > 0:
+            gold_for_check = spark.read.format("delta").load(DELTA_GOLD_PATH)
+            _run_soda_scan(spark, gold_for_check, GOLD_CHECKS_PATH, "gold_embeddings")
+
+        logger.info(
+            "Embedding pipeline complete | silver_read={} embedded={} gold_written={}",
+            silver_count, embedded_count, written_count,
+        )
         spark.stop()
-        return
-
-    silver_count = unembedded_df.count()
-
-    gold_rdd  = unembedded_df.rdd.mapPartitions(_embed_and_upsert_partition)
-    gold_df   = spark.createDataFrame(gold_rdd, schema=_gold_schema())
-    gold_df   = gold_df.cache()
-
-    embedded_count = gold_df.count()
-    logger.info("Chunks embedded and upserted to Pinecone: {}", embedded_count)
-
-    written_count = _append_to_gold(gold_df, spark)
-    gold_df.unpersist()
-
-    if written_count > 0:
-        gold_for_check = spark.read.format("delta").load(DELTA_GOLD_PATH)
-        _run_soda_scan(spark, gold_for_check, GOLD_CHECKS_PATH, "gold_embeddings")
-
-    logger.info(
-        "Embedding pipeline complete | silver_read={} embedded={} gold_written={}",
-        silver_count, embedded_count, written_count,
-    )
-    spark.stop()
+        emitter.emit_complete(row_count=written_count)
+    except Exception as exc:
+        emitter.emit_fail(error=exc)
+        raise
 
 
 if __name__ == "__main__":

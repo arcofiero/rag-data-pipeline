@@ -40,8 +40,6 @@ load_dotenv()
 
 DELTA_BRONZE_PATH     = os.environ.get("DELTA_BRONZE_PATH", "")
 DELTA_SILVER_PATH     = os.environ.get("DELTA_SILVER_PATH", "")
-AWS_ACCESS_KEY_ID     = os.environ.get("AWS_ACCESS_KEY_ID", "")
-AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
 
 MIN_WORD_COUNT = int(os.getenv("SILVER_MIN_WORD_COUNT", "10"))
 MIN_CHAR_COUNT = int(os.getenv("SILVER_MIN_CHAR_COUNT", "50"))
@@ -77,12 +75,6 @@ def _silver_schema():
 
 
 def _build_spark():
-    """
-    NOTE: static credentials for local dev only — use IAM instance profile
-    in production by removing the three credential .config() calls and setting
-    spark.hadoop.fs.s3a.aws.credentials.provider to
-    com.amazonaws.auth.InstanceProfileCredentialsProvider
-    """
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
     builder = (
@@ -90,16 +82,7 @@ def _build_spark():
         .appName("rag-silver-batch")
         .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
         .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
-        .config("spark.hadoop.fs.s3a.access.key", AWS_ACCESS_KEY_ID)
-        .config("spark.hadoop.fs.s3a.secret.key", AWS_SECRET_ACCESS_KEY)
-        .config("spark.hadoop.fs.s3a.endpoint", "s3.amazonaws.com")
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
-        .config("spark.jars.packages", ",".join([
-            "io.delta:delta-spark_2.12:3.2.0",
-            "org.apache.hadoop:hadoop-aws:3.3.4",
-            "com.amazonaws:aws-java-sdk-bundle:1.12.261",
-        ]))
+        .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
         .config("spark.databricks.delta.properties.defaults.enableChangeDataFeed", "true")
     )
@@ -298,58 +281,67 @@ def _run_soda_scan(spark, df, checks_path: Path, dataset_name: str) -> None:
 
 
 def run_silver_job() -> None:
+    from lineage.emitter import silver_emitter
     from pyspark.sql import functions as F
     from pyspark.sql.types import StringType, StructField, StructType
 
+    emitter = silver_emitter()
     logger.info("Starting Silver batch job | bronze={} silver={}", DELTA_BRONZE_PATH, DELTA_SILVER_PATH)
-    spark = _build_spark()
-    spark.sparkContext.setLogLevel("WARN")
+    emitter.emit_start()
 
-    bronze_df = _read_incremental_bronze(spark)
-    if bronze_df.rdd.isEmpty():
-        logger.info("No new Bronze rows — Silver job exiting early")
-        spark.stop()
-        return
+    try:
+        spark = _build_spark()
+        spark.sparkContext.setLogLevel("WARN")
 
-    _run_soda_scan(spark, bronze_df, BRONZE_CHECKS_PATH, "bronze_documents")
+        bronze_df = _read_incremental_bronze(spark)
+        if bronze_df.rdd.isEmpty():
+            logger.info("No new Bronze rows — Silver job exiting early")
+            spark.stop()
+            return
 
-    base_schema    = _silver_schema()
-    interim_schema = StructType(base_schema.fields + [StructField("_filtered", StringType(), nullable=True)])
-    interim_df     = spark.createDataFrame(bronze_df.rdd.mapPartitions(_normalize_partition), schema=interim_schema)
-    interim_df     = interim_df.cache()
+        _run_soda_scan(spark, bronze_df, BRONZE_CHECKS_PATH, "bronze_documents")
 
-    total_rows    = interim_df.count()
-    filtered_rows = interim_df.filter(F.col("_filtered") == True).count()
-    passed_rows   = total_rows - filtered_rows
+        base_schema    = _silver_schema()
+        interim_schema = StructType(base_schema.fields + [StructField("_filtered", StringType(), nullable=True)])
+        interim_df     = spark.createDataFrame(bronze_df.rdd.mapPartitions(_normalize_partition), schema=interim_schema)
+        interim_df     = interim_df.cache()
 
-    logger.info("Normalization complete | total={} filtered={} passed={}", total_rows, filtered_rows, passed_rows)
+        total_rows    = interim_df.count()
+        filtered_rows = interim_df.filter(F.col("_filtered") == True).count()
+        passed_rows   = total_rows - filtered_rows
 
-    silver_df = (
-        interim_df
-        .filter(F.col("_filtered") == False)
-        .drop("_filtered")
-        .dropDuplicates(["chunk_id"])
-    )
+        logger.info("Normalization complete | total={} filtered={} passed={}", total_rows, filtered_rows, passed_rows)
 
-    if silver_df.rdd.isEmpty():
-        logger.warning("All Bronze rows filtered — nothing to write to Silver")
+        silver_df = (
+            interim_df
+            .filter(F.col("_filtered") == False)
+            .drop("_filtered")
+            .dropDuplicates(["chunk_id"])
+        )
+
+        if silver_df.rdd.isEmpty():
+            logger.warning("All Bronze rows filtered — nothing to write to Silver")
+            interim_df.unpersist()
+            spark.stop()
+            return
+
+        _run_soda_scan(spark, silver_df, SILVER_CHECKS_PATH, "silver_chunks")
+
+        silver_df    = silver_df.cache()
+        merged_count = _merge_into_silver(silver_df, spark)
+
         interim_df.unpersist()
+        silver_df.unpersist()
+
+        logger.info(
+            "Silver job complete | bronze_read={} filtered={} passed={} silver_merged={}",
+            total_rows, filtered_rows, passed_rows, merged_count,
+        )
         spark.stop()
-        return
-
-    _run_soda_scan(spark, silver_df, SILVER_CHECKS_PATH, "silver_chunks")
-
-    silver_df    = silver_df.cache()
-    merged_count = _merge_into_silver(silver_df, spark)
-
-    interim_df.unpersist()
-    silver_df.unpersist()
-
-    logger.info(
-        "Silver job complete | bronze_read={} filtered={} passed={} silver_merged={}",
-        total_rows, filtered_rows, passed_rows, merged_count,
-    )
-    spark.stop()
+        emitter.emit_complete(row_count=merged_count)
+    except Exception as exc:
+        emitter.emit_fail(error=exc)
+        raise
 
 
 if __name__ == "__main__":
