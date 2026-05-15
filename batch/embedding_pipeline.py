@@ -153,16 +153,34 @@ def _embed_and_upsert_partition(rows: Iterator) -> Iterator:
         except (TypeError, ValueError, KeyError):
             return getattr(row, field, None)
 
+    def _is_retryable(exc):
+        msg = str(exc).lower()
+        return any(k in msg for k in ("503", "unavailable", "429", "resource_exhausted", "temporarily"))
+
     def _get_embeddings(texts):
-        if embedding_provider == "gemini":
-            result = _gemini_client.models.embed_content(
-                model=embed_model,
-                contents=texts,
-                config=_gtypes.EmbedContentConfig(output_dimensionality=1536),
-            )
-            return [e.values for e in result.embeddings]
-        response = _openai_client.embeddings.create(input=texts, model=embed_model)
-        return [item.embedding for item in response.data]
+        import time as _time
+        _waits = [1.0, 2.0, 4.0]
+        for attempt, backoff in enumerate(_waits):
+            try:
+                if embedding_provider == "gemini":
+                    result = _gemini_client.models.embed_content(
+                        model=embed_model,
+                        contents=texts,
+                        config=_gtypes.EmbedContentConfig(output_dimensionality=1536),
+                    )
+                    return [e.values for e in result.embeddings]
+                response = _openai_client.embeddings.create(input=texts, model=embed_model)
+                return [item.embedding for item in response.data]
+            except Exception as exc:
+                if _is_retryable(exc) and attempt < len(_waits) - 1:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Embedding transient error (attempt %d/%d) — retrying in %.1fs: %s",
+                        attempt + 1, len(_waits), backoff, exc,
+                    )
+                    _time.sleep(backoff)
+                else:
+                    raise
 
     partition_rows = list(rows)
     if not partition_rows:

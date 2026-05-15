@@ -37,6 +37,7 @@ Design decisions:
 from __future__ import annotations
 
 import os
+import time
 from typing import List, Optional
 
 from dotenv import load_dotenv
@@ -152,6 +153,32 @@ app = FastAPI(
 )
 
 
+# ─── Gemini retry helper ─────────────────────────────────────────────────────────
+
+_GEMINI_RETRY_WAITS = [1.0, 2.0, 4.0]  # seconds between attempts 1→2, 2→3, 3→fail
+
+
+def _is_retryable(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(k in msg for k in ("503", "unavailable", "429", "resource_exhausted", "temporarily"))
+
+
+def _gemini_with_retry(fn):
+    """Call fn(), retrying up to 3 times on transient Gemini 503/429 errors."""
+    for attempt, backoff in enumerate(_GEMINI_RETRY_WAITS):
+        try:
+            return fn()
+        except Exception as exc:
+            if _is_retryable(exc) and attempt < len(_GEMINI_RETRY_WAITS) - 1:
+                logger.warning(
+                    "Gemini transient error (attempt {}/{}) — retrying in {}s: {}",
+                    attempt + 1, len(_GEMINI_RETRY_WAITS), backoff, exc,
+                )
+                time.sleep(backoff)
+            else:
+                raise
+
+
 # ─── Core RAG logic (pure functions for testability) ────────────────────────────
 
 def _embed_query_gemini(query: str) -> List[float]:
@@ -160,14 +187,18 @@ def _embed_query_gemini(query: str) -> List[float]:
         from google import genai as _genai
         from google.genai import types as _types
         _client = _genai.Client(api_key=GEMINI_API_KEY)
-        result  = _client.models.embed_content(
-            model=GEMINI_EMBEDDING_MODEL,
-            contents=query,
-            config=_types.EmbedContentConfig(output_dimensionality=1536),
-        )
-        return result.embeddings[0].values
+
+        def _call():
+            result = _client.models.embed_content(
+                model=GEMINI_EMBEDDING_MODEL,
+                contents=query,
+                config=_types.EmbedContentConfig(output_dimensionality=1536),
+            )
+            return result.embeddings[0].values
+
+        return _gemini_with_retry(_call)
     except Exception as exc:
-        logger.error("Gemini embedding call failed: {}", exc)
+        logger.error("Gemini embedding call failed after retries: {}", exc)
         raise HTTPException(status_code=502, detail=f"Embedding service unavailable: {exc}")
 
 
@@ -285,10 +316,14 @@ def _generate_answer_gemini(query: str, context: str) -> str:
         from google import genai as _genai
         _client = _genai.Client(api_key=GEMINI_API_KEY)
         prompt  = f"{SYSTEM_PROMPT}\n\nContext:\n{context}\n\nQuestion: {query}"
-        result  = _client.models.generate_content(model=GEMINI_CHAT_MODEL, contents=prompt)
-        return result.text or ""
+
+        def _call():
+            result = _client.models.generate_content(model=GEMINI_CHAT_MODEL, contents=prompt)
+            return result.text or ""
+
+        return _gemini_with_retry(_call)
     except Exception as exc:
-        logger.error("Gemini chat completion failed: {}", exc)
+        logger.error("Gemini chat completion failed after retries: {}", exc)
         raise HTTPException(status_code=502, detail=f"Chat completion unavailable: {exc}")
 
 
@@ -377,7 +412,7 @@ def query(request: QueryRequest) -> QueryResponse:
         answer=answer,
         sources=citations,
         query=request.query,
-        model=OPENAI_CHAT_MODEL,
+        model=_active_chat_model,
         chunks_retrieved=len(citations),
     )
 
