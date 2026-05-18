@@ -1,145 +1,288 @@
 # RAG Data Pipeline
 
-![Python 3.11+](https://img.shields.io/badge/Python-3.11+-blue)
-![Apache Spark 3.5](https://img.shields.io/badge/Apache%20Spark-3.5-orange)
-![Delta Lake](https://img.shields.io/badge/Delta%20Lake-3.2-00ADD8)
-![Kafka](https://img.shields.io/badge/Kafka-Confluent%20Cloud-black)
-![Pinecone](https://img.shields.io/badge/Pinecone-Vector%20Store-green)
-![OpenAI](https://img.shields.io/badge/OpenAI-Embeddings%20%2B%20Chat-412991)
-![Airflow](https://img.shields.io/badge/Airflow-2.9-017CEE)
+[![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://python.org)
+[![Apache Kafka](https://img.shields.io/badge/Kafka-Confluent_Cloud-231F20?logo=apachekafka&logoColor=white)](https://confluent.io)
+[![Apache Spark](https://img.shields.io/badge/Spark-3.5-E25A1C?logo=apachespark&logoColor=white)](https://spark.apache.org)
+[![Delta Lake](https://img.shields.io/badge/Delta_Lake-S3-003366)](https://delta.io)
+[![Pinecone](https://img.shields.io/badge/Pinecone-Vector_Store-000000)](https://pinecone.io)
+[![OpenAI](https://img.shields.io/badge/OpenAI-Embeddings_+_Chat-412991?logo=openai&logoColor=white)](https://openai.com)
+[![Gemini](https://img.shields.io/badge/Google-Gemini-4285F4?logo=google&logoColor=white)](https://ai.google.dev)
+[![Groq](https://img.shields.io/badge/Groq-LPU_Inference-F55036)](https://groq.com)
+[![Airflow](https://img.shields.io/badge/Airflow-2.9-017CEE?logo=apacheairflow&logoColor=white)](https://airflow.apache.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io)
+[![Soda Core](https://img.shields.io/badge/Soda_Core-Data_Quality-1DB954)](https://soda.io)
+[![OpenLineage](https://img.shields.io/badge/OpenLineage-Lineage-FF6B35)](https://openlineage.io)
+
+Production-grade RAG data pipeline: document ingestion through Kafka → Spark → Delta Lake (Bronze/Silver/Gold) → multi-provider embeddings → Pinecone → FastAPI + Streamlit query interface. Orchestrated by Airflow, validated by Soda Core at every layer transition, and tracked end-to-end by OpenLineage.
 
 ---
 
 ## Architecture
 
 ```
-Document Sources
-  (PDFs · Web Crawl · Structured Records)
-          │
-          │ Avro-serialized events
-          ▼
-  ┌───────────────────────────────────────┐
-  │  Kafka — raw-documents topic          │
-  │  (Confluent Cloud)                    │
-  │                                       │
-  │  ~5% malformed → raw-documents-dlq   │
-  └──────────────┬────────────────────────┘
-                 │ micro-batch
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  Spark Structured Streaming           │
-  │  chunk · clean · deduplicate          │
-  │  chunk_id = SHA-256(doc+idx+hash)     │
-  └──────────────┬────────────────────────┘
-                 │ Delta write (partitioned by source + ingestion_date)
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  Delta Lake Bronze (S3)               │
-  │  raw documents, full fidelity         │
-  └──────────────┬────────────────────────┘
-                 │ Soda Core quality gate (null · length · dedup)
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  PySpark Silver Job                   │
-  │  normalize metadata · filter · enrich │
-  └──────────────┬────────────────────────┘
-                 │ Delta MERGE on chunk_id
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  Delta Lake Silver (S3)               │
-  │  cleaned chunks, normalized metadata  │
-  └──────────────┬────────────────────────┘
-                 │ Soda Core quality gate (schema · freshness contract)
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  PySpark Embedding Pipeline           │
-  │  mapPartitions → OpenAI API (batched) │
-  └──────────────┬────────────────────────┘
-                 │ Delta write
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  Delta Lake Gold (S3)                 │
-  │  chunk_id · vector_id · embedded_at   │
-  │  model_version · source               │
-  └──────────────┬────────────────────────┘
-                 │ Pinecone upsert (vector_id = chunk_id)
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  Pinecone Vector Store                │
-  │  1536-dim cosine · full metadata      │
-  └──────────────┬────────────────────────┘
-                 │ Soda Core freshness check (24h SLA on Silver→Gold gap)
-                 │
-  ┌──────────────┴────────────────────────┐
-  │  Apache Airflow DAGs                  │
-  │  full_pipeline_dag · nightly_refresh  │
-  └──────────────┬────────────────────────┘
-                 │ OpenLineage events at every job boundary
-                 │
-                 ▼
-  ┌───────────────────────────────────────┐
-  │  FastAPI RAG Endpoint                 │
-  │  POST /query                          │
-  │  Pinecone retrieval + OpenAI chat     │
-  └───────────────────────────────────────┘
+Document sources (PDF · web crawl · structured records)
+    │
+    ▼
+Kafka (Confluent Cloud)                     ← raw-documents topic · Avro · Schema Registry
+    │                    │
+    │                    └──► Dead Letter Queue (~5% malformed · dead_letter_event.avsc)
+    ▼
+Spark Structured Streaming                  ← chunk · clean · deduplicate · micro-batch
+    │
+    ▼
+Delta Lake Bronze                           ← raw chunks · partitioned by source + ingestion_date
+    │  Soda Core check (nulls · length · dedup)
+    ▼
+PySpark Silver batch job                    ← normalise · filter · enrich metadata
+    │
+    ▼
+Delta Lake Silver                           ← cleaned chunks · normalised metadata
+    │  Soda Core check (schema · word/char count · source type)
+    ▼
+PySpark embedding job (mapPartitions)       ← multi-provider embeddings · idempotent
+    │                                         chunk_id = Pinecone vector ID
+    ├──► Delta Lake Gold                    ← audit trail: chunk_id · vector_id · embedded_at · model_version
+    │      Soda Core freshness check (24h SLA)
+    └──► Pinecone                           ← upserted from Gold · full metadata payload
+    │
+    ▼
+Airflow DAGs                                ← full pipeline · local dev · nightly refresh
+    │
+    ▼
+OpenLineage                                 ← source doc → chunk → embedding lineage
+    │
+    ▼
+FastAPI RAG endpoint                        ← Pinecone retrieval · multi-provider chat completion
+    │
+    ▼
+Streamlit UI                                ← query interface · source citations · pipeline health
 ```
+
+**Design invariants:**
+- Delta Lake Gold is the source of truth — Pinecone is derived from it, never the reverse
+- Embedding pipeline is fully idempotent — re-running never creates duplicate vectors
+- All layer transitions are blocked on Soda Core passing — quality gates are not optional
+- Every Pinecone upsert carries full metadata: `source`, `chunk_id`, `document_id`, `ingested_at`, `embedded_at`
+- OpenLineage tracks which source documents influenced which embeddings
 
 ---
 
 ## Stack
 
-| Technology | Role |
-|---|---|
-| **Kafka (Confluent Cloud)** | Durable, ordered event bus for all document source events |
-| **Spark Structured Streaming** | Micro-batch ingestion — chunking, cleaning, deduplication with exactly-once semantics |
-| **PySpark (batch)** | Bronze→Silver normalization and Silver→Gold parallel embedding via `mapPartitions` |
-| **Delta Lake on S3** | ACID lakehouse — Bronze / Silver / Gold medallion layers with time travel and CDF |
-| **OpenAI `text-embedding-3-small`** | 1536-dimension dense vector generation for semantic search |
-| **Pinecone** | Managed ANN vector store — idempotent upsert via `chunk_id` as `vector_id` |
-| **Soda Core** | Contract-driven quality gates between every lakehouse layer transition |
-| **Apache Airflow** | DAG-based orchestration of the full pipeline and nightly refresh |
-| **OpenLineage** | End-to-end dataset lineage graph from source event to Pinecone vector |
-| **FastAPI** | Low-latency RAG serving — retrieval + OpenAI chat completion |
-| **Python 3.11+** | Consistent runtime across streaming, batch, quality, serving layers |
+| Layer | Technology |
+|-------|------------|
+| Streaming ingest | Confluent Cloud Kafka · Avro · Schema Registry |
+| Stream processing | Apache Spark Structured Streaming 3.5 |
+| Batch processing | PySpark |
+| Storage | Delta Lake on AWS S3 |
+| Embeddings | OpenAI `text-embedding-3-small` · Gemini `text-embedding-004` (via `EMBEDDING_PROVIDER`) |
+| Chat completion | OpenAI GPT-4o · Gemini · Groq (via `CHAT_PROVIDER`) |
+| Vector store | Pinecone |
+| Data quality | Soda Core |
+| Orchestration | Apache Airflow 2.9 |
+| Lineage | OpenLineage |
+| Query API | FastAPI |
+| UI | Streamlit |
+| Language | Python 3.11+ |
 
 ---
 
-## Design Principles
-
-### 1. Idempotency — `chunk_id` is the system-wide primary key
-
-Every chunk is assigned a deterministic ID:
-
-```python
-chunk_id = hashlib.sha256(
-    f"{document_id}:{chunk_index}:{content_hash}".encode()
-).hexdigest()
-```
-
-This `chunk_id` is used directly as the Pinecone `vector_id`. Because Pinecone upsert is idempotent on `vector_id`, any re-run — due to a bug fix, reprocessing, or infrastructure failure — produces exactly the same index state. No duplicate vectors accumulate.
-
-### 2. Delta Lake is the source of truth
-
-Pinecone is a **derived projection** of the Gold Delta table. It can be dropped and rebuilt at any time by replaying Gold through the embedding job. Audit queries, debugging, and reprocessing all target Delta — never Pinecone.
-
-### 3. Contract-driven layer transitions
-
-Soda Core quality gates block pipeline progression on failure. In Airflow:
+## Project Structure
 
 ```
-bronze_write >> bronze_soda_gate >> silver_transform
-silver_write >> silver_soda_gate >> gold_embed
+rag-data-pipeline/
+├── api/
+│   ├── rag_endpoint.py            # FastAPI app: /query, /health, embed, retrieve, generate
+│   └── main.py                    # ASGI entry point
+├── batch/
+│   ├── silver_job.py              # PySpark Silver: normalise, filter, enrich, MERGE
+│   └── embedding_pipeline.py      # PySpark Gold: mapPartitions → embed → Pinecone upsert → audit
+├── dags/
+│   ├── full_pipeline_dag.py       # Production SparkSubmitOperator DAG
+│   ├── local_pipeline_dag.py      # Local dev PythonOperator DAG (no Spark cluster needed)
+│   └── nightly_refresh_dag.py     # Nightly embedding refresh (02:00 UTC)
+├── lineage/
+│   ├── emitter.py                 # OpenLineage START/COMPLETE/FAIL event emitter
+│   └── openlineage_config.yml     # Namespace, transport, job naming conventions
+├── producers/
+│   ├── document_producer.py       # Kafka producer (PDF · web · structured · ~5% malformed → DLQ)
+│   ├── schema_registry.py         # Confluent Schema Registry Avro serialiser wrapper
+│   └── topic_admin.py             # Topic + DLQ creation utility
+├── quality/
+│   ├── bronze_checks.yml          # Soda Core: nulls, chunk length ≥ 50 chars, dedup
+│   ├── silver_checks.yml          # Soda Core: schema, word/char counts, source type
+│   └── gold_checks.yml            # Soda Core: freshness SLA (24h), vector_id nulls
+├── schemas/
+│   ├── document_event.avsc        # Avro schema: raw document event
+│   └── dead_letter_event.avsc     # Avro schema: malformed event envelope
+├── scripts/
+│   ├── bootstrap.py               # First-run setup: topics, registry, Delta table init
+│   ├── web_ingest.py              # Wikipedia crawler → Kafka producer
+│   ├── e2e_smoke_test.py          # End-to-end pipeline smoke test
+│   ├── load_test.py               # RAG endpoint load test (p50/p95/p99 latency, RPS)
+│   └── validate_lineage.py        # OpenLineage graph validator
+├── streaming/
+│   ├── spark_streaming_consumer.py # Spark Structured Streaming: Kafka → chunk → Delta Bronze
+│   └── chunker.py                 # Document chunking (512 tokens, 64 overlap, SHA-256 chunk_id)
+├── tests/                         # 165 tests, all passing
+│   ├── test_dags.py
+│   ├── test_embedding_pipeline.py
+│   ├── test_lineage.py
+│   ├── test_producer.py
+│   ├── test_rag_endpoint.py
+│   ├── test_silver_job.py
+│   ├── test_streaming_consumer.py
+│   └── test_web_ingest.py
+├── ui/
+│   └── app.py                     # Streamlit: query interface, source citations, health sidebar
+├── conftest.py                    # Pytest fixtures (Spark session, mock Kafka, Delta tables)
+├── .env.example                   # All required environment variables with comments
+├── .gitignore
+├── architecture.svg               # Architecture diagram
+├── docker-compose.yml             # Kafka · Spark · Airflow · Marquez
+├── Dockerfile
+└── requirements.txt               # Pinned dependencies
 ```
 
-A failed gate raises `SodaScanError` and blocks all downstream tasks. No silent data quality degradation.
+---
 
-### 4. Dead Letter Queue for malformed events
+## Getting Started
 
-Kafka events failing schema validation are routed to `raw-documents-dlq` with the original payload and a structured failure reason. The main pipeline is never blocked by malformed events. Operators can inspect, fix, and re-publish from the DLQ independently.
+### Prerequisites
 
-### 5. OpenLineage for full data lineage
+- Python 3.11+
+- Docker + Docker Compose
+- Confluent Cloud account (free tier sufficient)
+- AWS S3 bucket (or use local `/tmp` paths for dev — already configured in `.env.example`)
+- Pinecone account (free tier sufficient)
+- At least one of: OpenAI API key · Google AI API key · Groq API key
 
-OpenLineage events are emitted at every job boundary, building a queryable lineage graph:
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/arcofiero/rag-data-pipeline.git
+cd rag-data-pipeline
+cp .env.example .env
+# Edit .env — fill in Kafka, S3, Pinecone, and LLM credentials
+```
+
+### 2. Set your providers
+
+```bash
+# In .env — choose your LLM and embedding providers:
+CHAT_PROVIDER=openai        # openai | groq | gemini
+EMBEDDING_PROVIDER=openai   # openai | gemini
+```
+
+### 3. Install dependencies
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 4. Bootstrap infrastructure
+
+```bash
+# Creates Kafka topics, registers Avro schemas, initialises Delta tables
+python scripts/bootstrap.py
+```
+
+### 5. Start services
+
+```bash
+docker-compose up -d
+# Airflow UI:    http://localhost:8080
+# Marquez UI:    http://localhost:3000
+# FastAPI docs:  http://localhost:8000/docs
+```
+
+### 6. Run the pipeline
+
+```bash
+# Produce document events to Kafka (web crawl)
+python scripts/web_ingest.py
+
+# Start Spark Structured Streaming (Bronze layer)
+spark-submit streaming/spark_streaming_consumer.py
+
+# Run Silver + Gold batch jobs
+spark-submit batch/silver_job.py
+spark-submit batch/embedding_pipeline.py
+```
+
+### 7. Query
+
+```bash
+# FastAPI endpoint
+uvicorn api.rag_endpoint:app --port 8000
+# → POST http://localhost:8000/query
+
+# Streamlit UI (query interface + pipeline health)
+streamlit run ui/app.py
+```
+
+### 8. Run tests
+
+```bash
+pytest tests/ -v
+# 165 tests, all passing
+```
+
+### 9. Load test
+
+```bash
+python scripts/load_test.py --requests 50 --concurrency 5
+# Reports p50 / p95 / p99 latency and RPS
+```
+
+---
+
+## Multi-Provider Support
+
+The pipeline supports multiple LLM and embedding providers via environment variables — no code changes required when switching.
+
+| Variable | Accepted values | Default |
+|----------|----------------|---------|
+| `CHAT_PROVIDER` | `openai` \| `groq` \| `gemini` | `openai` |
+| `EMBEDDING_PROVIDER` | `openai` \| `gemini` | `openai` |
+
+> **Note:** OpenAI embeddings are 1536-dim; Gemini `text-embedding-004` embeddings are 768-dim. Switching embedding providers requires recreating the Pinecone index at the matching dimension.
+
+---
+
+## Data Quality Contracts
+
+Soda Core validates quality at every layer transition. **All layer promotions are blocked if any check fails.**
+
+| Layer | Contract | Checks |
+|-------|----------|--------|
+| Bronze → Silver | `quality/bronze_checks.yml` | Null content · chunk length ≥ 50 chars · duplicate `chunk_id` · schema conformance · valid source type |
+| Silver → Gold | `quality/silver_checks.yml` | Null content · null `chunk_id` · word count ≥ 10 · char count ≥ 50 · null `processed_at` · valid source type |
+| Gold freshness | `quality/gold_checks.yml` | Null `vector_id` · null `embedded_at` · null model name · valid embedding model |
+
+In Airflow the full chain is:
+
+```
+bronze_soda_gate >> silver_transform_job >> silver_soda_gate >> embedding_pipeline >> gold_soda_gate
+```
+
+---
+
+## Idempotency
+
+Re-running any part of the pipeline produces identical state:
+
+1. `chunk_id` is deterministic: `sha256(document_id + ":" + chunk_index + ":" + content_hash)`
+2. `chunk_id` is the Pinecone `vector_id` — upserts are idempotent by API contract
+3. Embedding job anti-joins Silver against Gold before calling the embedding API — already-embedded chunks are skipped without an API call
+
+---
+
+## Lineage
+
+OpenLineage emits `START`, `COMPLETE`, and `FAIL` events at every job boundary:
 
 ```
 kafka://raw-documents
@@ -149,110 +292,29 @@ kafka://raw-documents
   → pinecone://rag-documents
 ```
 
-When a RAG response is wrong, full provenance of any vector is one lineage query away.
-
----
-
-## Project Structure
-
-```
-rag-data-pipeline/
-├── producers/
-│   └── document_producer.py        # Kafka producer for PDF, web, structured sources (Day 2)
-├── streaming/
-│   └── spark_streaming_consumer.py # Spark Structured Streaming → Bronze Delta (Day 4)
-├── batch/
-│   ├── silver_job.py               # Bronze → Silver PySpark normalize + enrich (Day 5)
-│   └── embedding_pipeline.py       # Silver → Gold embedding via mapPartitions (Day 6)
-├── quality/
-│   ├── bronze_checks.yml           # Soda Core Bronze→Silver gate (Day 5)
-│   ├── silver_checks.yml           # Soda Core Silver→Gold gate (Day 5)
-│   └── gold_checks.yml             # Soda Core 24h freshness contract (Day 7)
-├── dags/
-│   ├── full_pipeline_dag.py        # Airflow full pipeline DAG (Day 7)
-│   └── nightly_refresh_dag.py      # Airflow nightly embedding refresh DAG (Day 7)
-├── api/
-│   └── rag_endpoint.py             # FastAPI RAG serving endpoint (Day 8)
-├── schemas/
-│   └── document_event.avsc         # Avro schema for raw-documents topic (Day 3)
-├── lineage/
-│   └── openlineage_config.yml      # OpenLineage client configuration (Day 9)
-├── tests/
-│   └── .gitkeep
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── .env.example
-├── .gitignore
-└── README.md
-```
-
----
-
-## Getting Started
+Validate the lineage graph after a run:
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/arcofiero/rag-data-pipeline.git
-cd rag-data-pipeline
-
-# 2. Configure credentials
-cp .env.example .env
-# Edit .env — fill in Kafka, AWS, OpenAI, Pinecone, Soda, OpenLineage values
-
-# 3. Install Python dependencies
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# 4. Start local infrastructure
-docker compose up -d
-# Spark Master UI:  http://localhost:8080
-# Airflow UI:       http://localhost:8081
-# FastAPI docs:     http://localhost:8000/docs
+python scripts/validate_lineage.py
 ```
 
 ---
 
 ## Build Plan
 
-| Day | Milestone | Description |
-|---|---|---|
-| **0** | Scaffold | Project structure, docker-compose, requirements, .env.example, README |
-| **1** | Infrastructure | Confluent Cloud Kafka setup, S3 bucket + Delta table init, Pinecone index creation |
-| **2** | Producers | PDF, web crawl, structured record producers with DLQ routing |
-| **3** | Avro schemas | `document_event.avsc`, Schema Registry setup, producer integration |
-| **4** | Spark Streaming | Micro-batch consumer, chunking, SHA-256 chunk_id, Bronze Delta write |
-| **5** | Silver + Soda | PySpark Silver transform, Bronze→Silver and Silver→Gold Soda Core gates |
-| **6** | Embeddings | `mapPartitions` OpenAI embedding job, Gold Delta write, idempotency verification |
-| **7** | Airflow + Soda | Full pipeline DAG, nightly refresh DAG, Soda freshness contract |
-| **8** | FastAPI | `/query` endpoint, Pinecone retrieval, OpenAI chat completion, attribution metadata |
-| **9** | OpenLineage | Emitter helpers at each job boundary, Marquez lineage graph validation |
-| **10** | Testing + Hardening | Unit tests (chunking, chunk_id, embedding batch), integration tests, load test |
-
----
-
-## Data Quality Contracts
-
-Soda Core checks are defined as YAML contracts and run as Airflow tasks. A failed scan blocks all downstream tasks.
-
-| Layer | Contract File | Checks |
-|---|---|---|
-| **Bronze → Silver** | `quality/bronze_checks.yml` | Null content, min chunk length (50 chars), duplicate chunk_id, schema conformance |
-| **Silver → Gold** | `quality/silver_checks.yml` | Null content, null chunk_id, min chunk length, schema conformance |
-| **Gold freshness** | `quality/gold_checks.yml` | Silver chunks not embedded within 24h, null vector_id, null embedded_at |
-
-Soda scan results are persisted to Soda Cloud for historical audit and alerting.
-
----
-
-## Contributing
-
-1. Fork the repository and create a feature branch: `git checkout -b feat/your-feature`
-2. Follow Conventional Commits for all commit messages: `feat:`, `fix:`, `docs:`, `chore:`
-3. Ensure all Soda Core checks pass locally before opening a PR
-4. Add or update tests in `tests/` for any new logic
-5. Open a pull request against `main` with a clear description of the change and its motivation
+| Day | Focus | What landed |
+|-----|-------|-------------|
+| 0 | Repo scaffold | Architecture diagram, stack, design principles, README |
+| 1 | Infrastructure | Confluent Cloud Kafka, S3 Delta tables, Pinecone index |
+| 2 | Kafka producer | Document event producer, ~5% malformed → DLQ, topic admin |
+| 3 | Avro + Schema Registry | `document_event.avsc`, `dead_letter_event.avsc`, registry client |
+| 4 | Spark Streaming → Bronze | Micro-batch consumer, chunker, SHA-256 `chunk_id`, Delta Bronze write |
+| 5 | Silver job + Soda gates | PySpark normalisation, Bronze + Silver Soda Core contracts |
+| 6 | Embedding pipeline | `mapPartitions`, OpenAI API, Pinecone upsert, Delta Gold audit trail |
+| 7 | Soda Gold + Airflow | Freshness SLA contract, full/local/nightly DAGs, end-to-end DAG test |
+| 8 | FastAPI RAG endpoint | Pinecone retrieval, chat completion, source citations, `/health` |
+| 9 | OpenLineage | Lineage emitter at every job boundary, Marquez integration, lineage validator |
+| 10 | Hardening + portfolio | Multi-provider support (Gemini, Groq), Streamlit UI, web ingest, load test, 165 tests |
 
 ---
 
