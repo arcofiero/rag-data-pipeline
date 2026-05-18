@@ -1,7 +1,17 @@
-# OpenLineage Configuration — Day 9
-# Configures the OpenLineage Python client for emitting dataset-level lineage events
-# at each job boundary: Kafka → Bronze, Bronze → Silver, Silver → Gold, Gold → Pinecone.
-# Placeholder — full emitter implementation in lineage/emitter.py on Day 9.
+# OpenLineage client configuration — Day 9
+#
+# Used by the OpenLineage Python client when OPENLINEAGE_URL is set.
+# Points to a Marquez backend (local Docker or hosted).
+#
+# To start Marquez locally:
+#   docker compose up marquez marquez-web
+#
+# Lineage API:  http://localhost:5000
+# Lineage UI:   http://localhost:3000
+#
+# Set in .env:
+#   OPENLINEAGE_URL=http://localhost:5000
+#   OPENLINEAGE_NAMESPACE=rag-pipeline
 
 transport:
   type: http
@@ -10,16 +20,17 @@ transport:
     type: api_key
     apiKey: ${OPENLINEAGE_API_KEY}
 
-facets:
-  spark_version:
-    enabled: true
-  spark_integration:
-    enabled: true
-
+# Namespace groups all jobs for this pipeline in the lineage graph.
 namespace: rag-pipeline
 
 # Job name conventions:
 #   spark.bronze_write       — Kafka → Bronze Delta
 #   spark.silver_transform   — Bronze → Silver Delta
-#   spark.gold_embed         — Silver → Gold Delta (embedding)
-#   spark.pinecone_upsert    — Gold → Pinecone
+#   spark.gold_embed         — Silver → Gold Delta + Pinecone upsert
+
+# Full lineage graph:
+#   kafka://raw-documents
+#     → delta://bronze
+#       → delta://silver
+#         → delta://gold
+#         → pinecone://rag-pipeline

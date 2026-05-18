@@ -34,3 +34,23 @@ services:
     command: uvicorn api.rag_endpoint:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
+
+  # ── Marquez — OpenLineage-compatible lineage backend ──────────────────────
+  marquez:
+    image: marquezproject/marquez:latest
+    ports:
+      - "5000:5000"   # API
+      - "5001:5001"   # admin
+    environment:
+      - MARQUEZ_PORT=5000
+      - MARQUEZ_ADMIN_PORT=5001
+
+  marquez-web:
+    image: marquezproject/marquez-web:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - MARQUEZ_HOST=marquez
+      - MARQUEZ_PORT=5000
+    depends_on:
+      - marquez

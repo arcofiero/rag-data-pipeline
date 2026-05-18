@@ -75,6 +75,16 @@ def _gold_schema():
 def _build_spark():
     from delta import configure_spark_with_delta_pip
     from pyspark.sql import SparkSession
+
+    # Env vars set by load_dotenv() live in the driver process only.
+    # Spark Python workers are forked by the JVM and don't inherit them.
+    # spark.executorEnv.* passes vars explicitly through the JVM to workers.
+    _worker_env_keys = [
+        "GEMINI_API_KEY", "OPENAI_API_KEY",
+        "PINECONE_API_KEY", "PINECONE_INDEX_NAME",
+        "EMBEDDING_PROVIDER", "GEMINI_EMBEDDING_MODEL", "OPENAI_EMBEDDING_MODEL",
+        "EMBED_BATCH_SIZE", "PINECONE_BATCH_SIZE",
+    ]
     builder = (
         SparkSession.builder
         .appName("rag-gold-embedding")
@@ -83,6 +93,11 @@ def _build_spark():
         .config("spark.jars.packages", "io.delta:delta-spark_2.12:3.2.0")
         .config("spark.databricks.delta.schema.autoMerge.enabled", "true")
     )
+    for key in _worker_env_keys:
+        val = os.environ.get(key, "")
+        if val:
+            builder = builder.config(f"spark.executorEnv.{key}", val)
+
     return configure_spark_with_delta_pip(builder).getOrCreate()
 
 
@@ -157,9 +172,22 @@ def _embed_and_upsert_partition(rows: Iterator) -> Iterator:
         msg = str(exc).lower()
         return any(k in msg for k in ("503", "unavailable", "429", "resource_exhausted", "temporarily"))
 
+    def _retry_wait(exc, default_backoff):
+        import re as _re
+        m = _re.search(r"retryDelay.*?(\d+)s", str(exc))
+        return int(m.group(1)) + 2 if m else default_backoff
+
     def _get_embeddings(texts):
         import time as _time
-        _waits = [1.0, 2.0, 4.0]
+        _waits = [2.0, 4.0, 8.0]
+        _GEMINI_MAX = 100  # BatchEmbedContents: max 100 per request
+
+        if embedding_provider == "gemini" and len(texts) > _GEMINI_MAX:
+            all_embeddings = []
+            for i in range(0, len(texts), _GEMINI_MAX):
+                all_embeddings.extend(_get_embeddings(texts[i:i + _GEMINI_MAX]))
+            return all_embeddings
+
         for attempt, backoff in enumerate(_waits):
             try:
                 if embedding_provider == "gemini":
@@ -173,12 +201,13 @@ def _embed_and_upsert_partition(rows: Iterator) -> Iterator:
                 return [item.embedding for item in response.data]
             except Exception as exc:
                 if _is_retryable(exc) and attempt < len(_waits) - 1:
+                    wait = _retry_wait(exc, backoff)
                     import logging
                     logging.getLogger(__name__).warning(
-                        "Embedding transient error (attempt %d/%d) — retrying in %.1fs: %s",
-                        attempt + 1, len(_waits), backoff, exc,
+                        "Embedding transient error (attempt %d/%d) — retrying in %.0fs: %s",
+                        attempt + 1, len(_waits), wait, exc,
                     )
-                    _time.sleep(backoff)
+                    _time.sleep(wait)
                 else:
                     raise
 

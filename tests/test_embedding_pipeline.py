@@ -13,14 +13,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
-os.environ.setdefault("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-os.environ.setdefault("PINECONE_API_KEY", "test-pc-key")
-os.environ.setdefault("PINECONE_INDEX_NAME", "test-index")
-os.environ.setdefault("EMBED_BATCH_SIZE", "512")
-os.environ.setdefault("PINECONE_BATCH_SIZE", "100")
-os.environ.setdefault("DELTA_SILVER_PATH", "s3a://test/silver")
-os.environ.setdefault("DELTA_GOLD_PATH", "s3a://test/gold")
+# Force OpenAI provider for these tests — prevents .env Gemini values leaking in
+os.environ["EMBEDDING_PROVIDER"]      = "openai"
+os.environ["OPENAI_API_KEY"]          = "test-key"
+os.environ["OPENAI_EMBEDDING_MODEL"]  = "text-embedding-3-small"
+os.environ.setdefault("PINECONE_API_KEY",       "test-pc-key")
+os.environ.setdefault("PINECONE_INDEX_NAME",    "test-index")
+os.environ.setdefault("EMBED_BATCH_SIZE",       "512")
+os.environ.setdefault("PINECONE_BATCH_SIZE",    "100")
+os.environ.setdefault("DELTA_SILVER_PATH",      "s3a://test/silver")
+os.environ.setdefault("DELTA_GOLD_PATH",        "s3a://test/gold")
 
 from batch.embedding_pipeline import EMBED_BATCH_SIZE, _embed_and_upsert_partition
 
@@ -176,3 +178,213 @@ class TestBatchHandling:
     def test_gold_record_count_matches_successful_embeddings(self):
         rows = [_make_row(chunk_id=f"c-{i}") for i in range(7)]
         assert len(_run_partition(rows)) == 7
+
+
+class TestGeminiProvider:
+    """Tests for the Gemini embedding provider path."""
+
+    def _run_gemini_partition(self, rows, gemini_embeddings=None, pinecone_mock=None):
+        """Run partition with EMBEDDING_PROVIDER=gemini and mocked google.genai."""
+        if gemini_embeddings is None:
+            gemini_embeddings = [[0.01] * 1536 for _ in rows]
+
+        gemini_result = MagicMock()
+        gemini_result.embeddings = [MagicMock(values=e) for e in gemini_embeddings]
+
+        gemini_client_mock = MagicMock()
+        gemini_client_mock.models.embed_content.return_value = gemini_result
+
+        genai_mock = MagicMock()
+        genai_mock.Client.return_value = gemini_client_mock
+
+        gtypes_mock = MagicMock()
+
+        if pinecone_mock is None:
+            pinecone_mock = MagicMock()
+
+        with (
+            patch.dict(os.environ, {"EMBEDDING_PROVIDER": "gemini",
+                                    "GEMINI_API_KEY": "test-gemini-key",
+                                    "GEMINI_EMBEDDING_MODEL": "models/gemini-embedding-001"}),
+            patch("google.genai", genai_mock, create=True),
+            patch.dict("sys.modules", {
+                "google": MagicMock(genai=genai_mock),
+                "google.genai": genai_mock,
+                "google.genai.types": gtypes_mock,
+            }),
+            patch("pinecone.Pinecone", pinecone_mock),
+        ):
+            return list(_embed_and_upsert_partition(iter(rows))), gemini_client_mock
+
+    def test_gemini_model_name_in_gold_record(self):
+        rows = [_make_row()]
+        with patch.dict(os.environ, {"EMBEDDING_PROVIDER": "gemini",
+                                     "GEMINI_API_KEY": "test-gemini-key",
+                                     "GEMINI_EMBEDDING_MODEL": "models/gemini-embedding-001"}):
+            gemini_result = MagicMock()
+            gemini_result.embeddings = [MagicMock(values=[0.01] * 1536)]
+            genai_mod = MagicMock()
+            genai_mod.Client.return_value.models.embed_content.return_value = gemini_result
+            gtypes = MagicMock()
+            with (
+                patch.dict("sys.modules", {
+                    "google": MagicMock(genai=genai_mod),
+                    "google.genai": genai_mod,
+                    "google.genai.types": gtypes,
+                }),
+                patch("pinecone.Pinecone", MagicMock()),
+            ):
+                results = list(_embed_and_upsert_partition(iter(rows)))
+        assert results[0]["model"] == "models/gemini-embedding-001"
+
+    def test_gemini_yields_correct_count(self):
+        rows = [_make_row(chunk_id=f"c-{i}") for i in range(5)]
+        results, _ = self._run_gemini_partition(
+            rows, gemini_embeddings=[[0.01] * 1536 for _ in rows]
+        )
+        assert len(results) == 5
+
+    def test_gemini_vector_id_equals_chunk_id(self):
+        row = _make_row(chunk_id="gemini-chunk-001")
+        results, _ = self._run_gemini_partition([row], gemini_embeddings=[[0.01] * 1536])
+        assert results[0]["chunk_id"] == "gemini-chunk-001"
+        assert results[0]["vector_id"] == "gemini-chunk-001"
+
+    def test_gemini_failure_yields_nothing(self):
+        with patch.dict(os.environ, {"EMBEDDING_PROVIDER": "gemini",
+                                     "GEMINI_API_KEY": "test-key",
+                                     "GEMINI_EMBEDDING_MODEL": "models/gemini-embedding-001"}):
+            genai_mod = MagicMock()
+            genai_mod.Client.return_value.models.embed_content.side_effect = Exception("503 UNAVAILABLE")
+            with (
+                patch.dict("sys.modules", {
+                    "google": MagicMock(genai=genai_mod),
+                    "google.genai": genai_mod,
+                    "google.genai.types": MagicMock(),
+                }),
+                patch("pinecone.Pinecone", MagicMock()),
+            ):
+                results = list(_embed_and_upsert_partition(iter([_make_row()])))
+        assert results == []
+
+
+class TestRetryLogic:
+    """Tests for the retry and backoff helpers inside _embed_and_upsert_partition."""
+
+    def _make_retryable_exc(self, message="503 UNAVAILABLE. retryDelay: 10s"):
+        return Exception(message)
+
+    def test_openai_retried_on_transient_error(self):
+        """OpenAI call fails once with 503 then succeeds — partition yields result."""
+        rows = [_make_row()]
+        openai_mock = MagicMock()
+        call_count = [0]
+
+        def flaky_create(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise Exception("503 UNAVAILABLE temporarily")
+            return _mock_openai_response(len(kwargs["input"]))
+
+        openai_mock.return_value.embeddings.create.side_effect = flaky_create
+
+        with patch("time.sleep"):  # don't actually wait
+            results = _run_partition(rows, openai_mock=openai_mock)
+
+        assert len(results) == 1
+        assert call_count[0] == 2  # first failed, second succeeded
+
+    def test_non_retryable_error_skips_immediately(self):
+        """A non-retryable error (e.g. auth 401) skips the batch without retrying."""
+        rows = [_make_row()]
+        openai_mock = MagicMock()
+        call_count = [0]
+
+        def auth_error(**kwargs):
+            call_count[0] += 1
+            raise Exception("401 Unauthorized invalid API key")
+
+        openai_mock.return_value.embeddings.create.side_effect = auth_error
+
+        with patch("time.sleep"):
+            results = _run_partition(rows, openai_mock=openai_mock)
+
+        assert results == []
+        assert call_count[0] == 1  # not retried
+
+    def test_retry_exhaustion_yields_no_records(self):
+        """All retries exhausted — batch skipped, no gold records yielded."""
+        rows = [_make_row()]
+        openai_mock = MagicMock()
+        openai_mock.return_value.embeddings.create.side_effect = Exception("503 UNAVAILABLE temporarily")
+
+        with patch("time.sleep"):
+            results = _run_partition(rows, openai_mock=openai_mock)
+
+        assert results == []
+
+
+class TestGeminiSubBatching:
+    """Tests for the 100-item Gemini batch limit sub-batching logic."""
+
+    def test_gemini_sub_batches_at_100_items(self):
+        """150 chunks → 2 Gemini API calls (100 + 50)."""
+        n = 150
+        rows = [_make_row(chunk_id=f"c-{i}") for i in range(n)]
+
+        call_sizes = []
+        def fake_embed_content(model, contents, config):
+            call_sizes.append(len(contents))
+            result = MagicMock()
+            result.embeddings = [MagicMock(values=[0.01] * 1536) for _ in contents]
+            return result
+
+        with patch.dict(os.environ, {"EMBEDDING_PROVIDER": "gemini",
+                                     "GEMINI_API_KEY": "test-key",
+                                     "GEMINI_EMBEDDING_MODEL": "models/gemini-embedding-001",
+                                     "EMBED_BATCH_SIZE": "512"}):
+            genai_mod = MagicMock()
+            genai_mod.Client.return_value.models.embed_content.side_effect = fake_embed_content
+            with (
+                patch.dict("sys.modules", {
+                    "google": MagicMock(genai=genai_mod),
+                    "google.genai": genai_mod,
+                    "google.genai.types": MagicMock(),
+                }),
+                patch("pinecone.Pinecone", MagicMock()),
+            ):
+                results = list(_embed_and_upsert_partition(iter(rows)))
+
+        assert len(results) == n
+        assert call_sizes == [100, 50]
+
+    def test_gemini_exactly_100_items_single_call(self):
+        """Exactly 100 chunks → exactly 1 Gemini API call."""
+        n = 100
+        rows = [_make_row(chunk_id=f"c-{i}") for i in range(n)]
+        call_count = [0]
+
+        def fake_embed_content(model, contents, config):
+            call_count[0] += 1
+            result = MagicMock()
+            result.embeddings = [MagicMock(values=[0.01] * 1536) for _ in contents]
+            return result
+
+        with patch.dict(os.environ, {"EMBEDDING_PROVIDER": "gemini",
+                                     "GEMINI_API_KEY": "test-key",
+                                     "GEMINI_EMBEDDING_MODEL": "models/gemini-embedding-001",
+                                     "EMBED_BATCH_SIZE": "512"}):
+            genai_mod = MagicMock()
+            genai_mod.Client.return_value.models.embed_content.side_effect = fake_embed_content
+            with (
+                patch.dict("sys.modules", {
+                    "google": MagicMock(genai=genai_mod),
+                    "google.genai": genai_mod,
+                    "google.genai.types": MagicMock(),
+                }),
+                patch("pinecone.Pinecone", MagicMock()),
+            ):
+                results = list(_embed_and_upsert_partition(iter(rows)))
+
+        assert len(results) == n
+        assert call_count[0] == 1
