@@ -20,43 +20,72 @@ Production-grade RAG data pipeline: document ingestion through Kafka → Spark �
 
 ## Architecture
 
-```
-Document sources (PDF · web crawl · structured records)
-    │
-    ▼
-Kafka (Confluent Cloud)                     ← raw-documents topic · Avro · Schema Registry
-    │                    │
-    │                    └──► Dead Letter Queue (~5% malformed · dead_letter_event.avsc)
-    ▼
-Spark Structured Streaming                  ← chunk · clean · deduplicate · micro-batch
-    │
-    ▼
-Delta Lake Bronze                           ← raw chunks · partitioned by source + ingestion_date
-    │  Soda Core check (nulls · length · dedup)
-    ▼
-PySpark Silver batch job                    ← normalise · filter · enrich metadata
-    │
-    ▼
-Delta Lake Silver                           ← cleaned chunks · normalised metadata
-    │  Soda Core check (schema · word/char counts · source type)
-    ▼
-PySpark embedding job (mapPartitions)       ← multi-provider embeddings · idempotent
-    │                                         chunk_id = Pinecone vector ID
-    ├──► Delta Lake Gold                    ← audit trail: chunk_id · vector_id · model · embedded_at
-    │      Soda Core freshness check (24h SLA)
-    └──► Pinecone                           ← upserted from Gold · full metadata payload
-    │
-    ▼
-Airflow DAGs                                ← full pipeline · local dev · nightly refresh
-    │
-    ▼
-OpenLineage                                 ← source doc → chunk → embedding lineage
-    │
-    ▼
-FastAPI RAG endpoint                        ← Pinecone retrieval · multi-provider chat completion
-    │
-    ▼
-Streamlit UI                                ← query interface · source citations · pipeline health
+```mermaid
+flowchart TD
+    subgraph Producers["⚙️ Event Producers"]
+        P1[PDF Producer]
+        P2[Web Crawler\nWikipedia API]
+        P3[Structured Records\nGenerator]
+    end
+
+    subgraph Kafka["📨 Confluent Kafka + Schema Registry"]
+        SR[Avro Schema Registry]
+        T1[raw-documents]
+        DLQ[raw-documents-dlq]
+    end
+
+    subgraph Spark["⚡ Spark Structured Streaming — Bronze Ingest"]
+        FC[Streaming Consumer\nAvro Deserializer\n512-token Chunker · SHA-256 chunk_id]
+        DH[DLQ Handler\nMalformed Events]
+    end
+
+    subgraph Bronze["🥉 Bronze Layer — Delta Lake on S3"]
+        B1[bronze_documents\npartitioned by source + ingestion_date]
+        B2[bronze_dlq_audit]
+        SC1{Soda Core\n6 Bronze Checks}
+    end
+
+    subgraph Silver["🥈 Silver Layer — PySpark Batch"]
+        S1[silver_chunks\nnormalise · filter · enrich]
+        S2[silver_dlq_audit]
+        SC2{Soda Core\n12 Silver Checks}
+    end
+
+    subgraph Gold["🥇 Gold Layer — PySpark + Embeddings"]
+        EMB[Embedding Job\nmapPartitions · OpenAI / Gemini]
+        G1[gold_embeddings\nchunk_id · vector_id · model · embedded_at]
+        PC[Pinecone\nVector Store]
+        SC3{Soda Core\n8 Gold Checks}
+    end
+
+    subgraph Serving["🔍 RAG Serving"]
+        API[FastAPI\nPOST /query · GET /health\nOpenAI · Gemini · Groq]
+        UI[Streamlit UI\nQuery Interface · Source Citations · Health Sidebar]
+    end
+
+    subgraph Orchestration["🔁 Airflow Orchestration"]
+        DAG1[full_pipeline_dag\nSparkSubmitOperator]
+        DAG2[nightly_refresh_dag\n02:00 UTC]
+        DAG3[local_pipeline_dag\nPythonOperator · Dev]
+        OL[OpenLineage\nData Lineage]
+    end
+
+    P1 & P2 & P3 -->|Avro + 5% bad events| SR
+    SR --> T1
+    T1 --> FC
+    FC -->|valid chunks| B1
+    FC -->|schema failures| DH --> DLQ --> B2
+    B1 & B2 --> SC1
+    SC1 -->|pass| S1 & S2
+    S1 & S2 --> SC2
+    SC2 -->|pass| EMB
+    EMB --> G1
+    EMB -->|upsert chunk_id| PC
+    G1 & PC --> SC3
+    SC3 --> API
+    API --> UI
+    DAG1 & DAG2 & DAG3 -.->|orchestrates| Spark & Silver & Gold
+    DAG1 & DAG2 & DAG3 -.-> OL
 ```
 
 **Design invariants:**
